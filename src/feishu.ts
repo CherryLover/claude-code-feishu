@@ -159,16 +159,26 @@ async function handleMessage(client: Lark.Client, data: any) {
   const sessionId = sessions.get(chatId) || null;
   const chunks: string[] = [];
 
+  // 先发送一条"处理中"的消息，获取 message_id
+  const messageId = await sendCard(client, chatId, 'Claude Code', '🔄 处理中...');
+  if (!messageId) {
+    processing.delete(chatId);
+    return;
+  }
+
   try {
     for await (const event of streamClaudeChat(text, sessionId)) {
       switch (event.type) {
         case 'tool_start':
           console.log(`[Claude] 工具调用: ${event.toolName}`);
           chunks.push(formatToolStart(event.toolName!));
+          // 实时更新卡片
+          await updateCard(client, messageId, 'Claude Code', chunks.join('\n') + '\n\n🔄 执行中...');
           break;
         case 'tool_end':
           console.log(`[Claude] 工具输入: ${event.toolInput?.slice(0, 100)}...`);
           chunks.push(formatToolEnd(event.toolName!, event.toolInput || ''));
+          await updateCard(client, messageId, 'Claude Code', chunks.join('\n') + '\n\n🔄 等待结果...');
           break;
         case 'tool_result':
           console.log(`[Claude] 工具结果: ${event.toolOutput?.slice(0, 100)}...`);
@@ -176,6 +186,7 @@ async function handleMessage(client: Lark.Client, data: any) {
             chunks.push(formatToolResult(event.toolOutput));
           }
           chunks.push('---');
+          await updateCard(client, messageId, 'Claude Code', chunks.join('\n') + '\n\n🔄 继续处理...');
           break;
         case 'result':
           console.log(`[Claude] 处理完成`);
@@ -193,21 +204,22 @@ async function handleMessage(client: Lark.Client, data: any) {
       }
     }
 
+    // 最终更新为完整结果
     const finalContent = chunks.join('\n') || '（无响应）';
-    console.log(`[飞书] 发送消息到 ${chatId}，长度: ${finalContent.length}`);
-    await sendCard(client, chatId, 'Claude Code', finalContent);
+    console.log(`[飞书] 更新最终结果，长度: ${finalContent.length}`);
+    await updateCard(client, messageId, 'Claude Code', finalContent);
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
     console.error(`[错误] Claude 处理失败: ${errMsg}`);
-    await sendCard(client, chatId, 'Claude Code', `❌ 错误: ${errMsg}`);
+    await updateCard(client, messageId, 'Claude Code', `❌ 错误: ${errMsg}`);
   } finally {
     processing.delete(chatId);
   }
 }
 
-async function sendCard(client: Lark.Client, chatId: string, title: string, content: string) {
+async function sendCard(client: Lark.Client, chatId: string, title: string, content: string): Promise<string | null> {
   try {
-    await client.im.message.create({
+    const resp = await client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
         receive_id: chatId,
@@ -215,9 +227,27 @@ async function sendCard(client: Lark.Client, chatId: string, title: string, cont
         content: buildFeishuCard(title, content),
       },
     });
-    console.log(`[飞书] 消息发送成功`);
+    const messageId = resp.data?.message_id;
+    console.log(`[飞书] 消息发送成功, message_id: ${messageId}`);
+    return messageId || null;
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
     console.error(`[飞书] 消息发送失败: ${errMsg}`);
+    return null;
+  }
+}
+
+async function updateCard(client: Lark.Client, messageId: string, title: string, content: string) {
+  try {
+    await client.im.message.patch({
+      path: { message_id: messageId },
+      data: {
+        content: buildFeishuCard(title, content),
+      },
+    });
+    console.log(`[飞书] 卡片更新成功`);
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.error(`[飞书] 卡片更新失败: ${errMsg}`);
   }
 }
