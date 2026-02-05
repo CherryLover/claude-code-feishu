@@ -1,0 +1,27 @@
+{
+  "name": "claude-code-feishu",
+  "version": "1.0.0",
+  "description": "极简飞书机器人，通过 Claude Agent SDK 进行对话",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "feishu",
+    "claude",
+    "chatbot"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "@larksuiteoapi/node-sdk": "^1.24.0",
+    "dotenv": "^17.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
