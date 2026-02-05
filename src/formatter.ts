@@ -73,7 +73,9 @@ export function formatToolResult(output: string): string {
 }
 
 export function buildFeishuCard(title: string, content: string): string {
+  // 使用卡片 JSON v2 格式，支持更完整的 Markdown 语法（包括表格、标题等）
   return JSON.stringify({
+    schema: '2.0',
     config: {
       wide_screen_mode: true,
       enable_forward: true,
@@ -82,14 +84,13 @@ export function buildFeishuCard(title: string, content: string): string {
       title: { content: title, tag: 'plain_text' },
       template: 'blue',
     },
-    elements: [
-      {
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
           content,
         },
-      },
-    ],
+      ],
+    },
   });
 }
