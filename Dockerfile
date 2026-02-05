@@ -20,11 +20,14 @@ RUN npm ci --omit=dev
 # 复制构建产物
 COPY dist/ ./dist/
 
-# 创建默认工作目录（即使 volume 挂载失败也不会报错）
+# 创建默认工作目录
 RUN mkdir -p /workspace
 
-# 创建非 root 用户（可选，bypassPermissions 在容器内已隔离）
-# RUN useradd -m bot && chown -R bot:bot /app
-# USER bot
+# 创建非 root 用户（Claude Code 不允许 root 使用 bypassPermissions）
+RUN useradd -m -s /bin/bash claude \
+    && chown -R claude:claude /app /workspace
+
+# 切换到非 root 用户
+USER claude
 
 CMD ["node", "dist/index.js"]
