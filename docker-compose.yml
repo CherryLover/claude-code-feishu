@@ -1,0 +1,31 @@
+services:
+  # 实例 A - 项目 A 专用
+  bot-a:
+    build: .
+    container_name: claude-bot-a
+    restart: unless-stopped
+    environment:
+      # 容器内的工作目录，Claude 会在这个目录下工作
+      - WORKSPACE=/workspace
+      - ANTHROPIC_API_KEY=${BOT_A_ANTHROPIC_API_KEY}
+      - FEISHU_APP_ID=${BOT_A_FEISHU_APP_ID}
+      - FEISHU_APP_SECRET=${BOT_A_FEISHU_APP_SECRET}
+    volumes:
+      # 宿主机路径:容器内路径
+      # 左边是宿主机上的真实项目目录，右边固定为 /workspace
+      - /home/jiangjiwei/Code/my-project:/workspace
+
+  # # 实例 B - 项目 B 专用（按需启用）
+  # bot-b:
+  #   build: .
+  #   container_name: claude-bot-b
+  #   restart: unless-stopped
+  #   environment:
+  #     - WORKSPACE=/workspace
+  #     - ANTHROPIC_API_KEY=${BOT_B_ANTHROPIC_API_KEY}
+  #     - FEISHU_APP_ID=${BOT_B_FEISHU_APP_ID}
+  #     - FEISHU_APP_SECRET=${BOT_B_FEISHU_APP_SECRET}
+  #   volumes:
+  #     - ${BOT_B_WORKSPACE:-./workspace-b}:/workspace
+
+  # 按需复制上面的配置添加更多实例...
