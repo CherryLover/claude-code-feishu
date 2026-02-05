@@ -10,6 +10,10 @@ services:
       - ANTHROPIC_API_KEY=${BOT_A_ANTHROPIC_API_KEY}
       - FEISHU_APP_ID=${BOT_A_FEISHU_APP_ID}
       - FEISHU_APP_SECRET=${BOT_A_FEISHU_APP_SECRET}
+      # 可选：Claude API 代理地址（如果需要走代理）
+      # - ANTHROPIC_BASE_URL=https://your-proxy.com/api
+      # 可选：启动时通知的用户（填 open_id 或 chat_id）
+      # - NOTIFY_USER_ID=ou_xxxxxx
     volumes:
       # 宿主机路径:容器内路径
       # 左边是宿主机上的真实项目目录，右边固定为 /workspace
