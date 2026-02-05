@@ -5,6 +5,9 @@ export const config = {
   feishuAppId: process.env.FEISHU_APP_ID || '',
   feishuAppSecret: process.env.FEISHU_APP_SECRET || '',
 
+  // 启动通知（可选，填 open_id 或 chat_id）
+  notifyUserId: process.env.NOTIFY_USER_ID || '',
+
   // 工作目录
   workspace: process.env.WORKSPACE || '/workspace',
 };

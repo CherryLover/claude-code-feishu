@@ -9,11 +9,15 @@ const dedup = new MessageDedup();
 // 跟踪正在处理中的聊天，避免并发
 const processing = new Set<string>();
 
+// 模块级 client，供启动通知使用
+let feishuClient: Lark.Client | null = null;
+
 export function startFeishuBot() {
   const client = new Lark.Client({
     appId: config.feishuAppId,
     appSecret: config.feishuAppSecret,
   });
+  feishuClient = client;
 
   const wsClient = new Lark.WSClient({
     appId: config.feishuAppId,
@@ -29,11 +33,13 @@ export function startFeishuBot() {
 
         // 1. 消息去重
         if (dedup.isDuplicate(message.message_id)) {
+          console.log(`[跳过] 重复消息: ${message.message_id}`);
           return;
         }
 
         // 2. 只处理文本消息
         if (message.message_type !== 'text') {
+          console.log(`[跳过] 非文本消息: ${message.message_type}`);
           return;
         }
 
@@ -46,10 +52,13 @@ export function startFeishuBot() {
           }
         }
 
+        const senderId = data.sender?.sender_id?.open_id || 'unknown';
+        console.log(`[收到消息] ${chatType === 'group' ? '群聊' : '私聊'} | chat_id: ${message.chat_id} | sender: ${senderId}`);
+
         // 4. 异步处理（立即返回，避免 3 秒超时）
         setImmediate(() => {
           handleMessage(client, data).catch((err) => {
-            console.error('处理消息失败:', err);
+            console.error('[错误] 处理消息失败:', err);
           });
         });
       },
@@ -57,6 +66,36 @@ export function startFeishuBot() {
   });
 
   console.log('飞书机器人已启动（WebSocket 长连接）');
+
+  // 发送启动通知
+  if (config.notifyUserId) {
+    // 延迟 2 秒等待 WebSocket 连接建立
+    setTimeout(() => {
+      sendStartupNotification(client);
+    }, 2000);
+  }
+}
+
+async function sendStartupNotification(client: Lark.Client) {
+  const userId = config.notifyUserId;
+  const isOpenId = userId.startsWith('ou_');
+
+  console.log(`[启动通知] 发送到 ${userId}`);
+
+  try {
+    await client.im.message.create({
+      params: { receive_id_type: isOpenId ? 'open_id' : 'chat_id' },
+      data: {
+        receive_id: userId,
+        msg_type: 'interactive',
+        content: buildFeishuCard('Claude Code', `✅ 机器人已启动\n\n工作目录: \`${config.workspace}\``),
+      },
+    });
+    console.log(`[启动通知] 发送成功`);
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.error(`[启动通知] 发送失败: ${errMsg}`);
+  }
 }
 
 async function handleMessage(client: Lark.Client, data: any) {
@@ -65,6 +104,7 @@ async function handleMessage(client: Lark.Client, data: any) {
 
   // 防止同一个聊天并发处理
   if (processing.has(chatId)) {
+    console.log(`[跳过] 聊天 ${chatId} 正在处理中`);
     await sendCard(client, chatId, 'Claude Code', '⏳ 上一条消息还在处理中，请稍候...');
     return;
   }
@@ -91,14 +131,18 @@ async function handleMessage(client: Lark.Client, data: any) {
 
   if (!text) return;
 
+  console.log(`[消息内容] "${text}"`);
+
   // 处理命令
   if (text === '/clear' || text === '/new') {
+    console.log(`[命令] 清除会话`);
     sessions.delete(chatId);
     await sendCard(client, chatId, 'Claude Code', '✅ 会话已清除，开始新对话');
     return;
   }
 
   if (text === '/status') {
+    console.log(`[命令] 查询状态`);
     const hasSession = sessions.has(chatId);
     await sendCard(
       client,
@@ -110,6 +154,7 @@ async function handleMessage(client: Lark.Client, data: any) {
   }
 
   // 调用 Claude
+  console.log(`[Claude] 开始处理...`);
   processing.add(chatId);
   const sessionId = sessions.get(chatId) || null;
   const chunks: string[] = [];
@@ -118,18 +163,22 @@ async function handleMessage(client: Lark.Client, data: any) {
     for await (const event of streamClaudeChat(text, sessionId)) {
       switch (event.type) {
         case 'tool_start':
+          console.log(`[Claude] 工具调用: ${event.toolName}`);
           chunks.push(formatToolStart(event.toolName!));
           break;
         case 'tool_end':
+          console.log(`[Claude] 工具输入: ${event.toolInput?.slice(0, 100)}...`);
           chunks.push(formatToolEnd(event.toolName!, event.toolInput || ''));
           break;
         case 'tool_result':
+          console.log(`[Claude] 工具结果: ${event.toolOutput?.slice(0, 100)}...`);
           if (event.toolOutput) {
             chunks.push(formatToolResult(event.toolOutput));
           }
           chunks.push('---');
           break;
         case 'result':
+          console.log(`[Claude] 处理完成`);
           if (event.sessionId) {
             sessions.set(chatId, event.sessionId);
           }
@@ -138,15 +187,18 @@ async function handleMessage(client: Lark.Client, data: any) {
           }
           break;
         case 'error':
+          console.log(`[Claude] 错误: ${event.content}`);
           chunks.push(`\n❌ **错误：** ${event.content}`);
           break;
       }
     }
 
     const finalContent = chunks.join('\n') || '（无响应）';
+    console.log(`[飞书] 发送消息到 ${chatId}，长度: ${finalContent.length}`);
     await sendCard(client, chatId, 'Claude Code', finalContent);
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.error(`[错误] Claude 处理失败: ${errMsg}`);
     await sendCard(client, chatId, 'Claude Code', `❌ 错误: ${errMsg}`);
   } finally {
     processing.delete(chatId);
@@ -163,8 +215,9 @@ async function sendCard(client: Lark.Client, chatId: string, title: string, cont
         content: buildFeishuCard(title, content),
       },
     });
+    console.log(`[飞书] 消息发送成功`);
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
-    console.error('发送飞书消息失败:', errMsg);
+    console.error(`[飞书] 消息发送失败: ${errMsg}`);
   }
 }
