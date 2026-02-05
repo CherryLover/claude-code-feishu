@@ -10,6 +10,10 @@ export async function* streamClaudeChat(
     cwd: config.workspace,
     includePartialMessages: true,
     permissionMode: 'bypassPermissions',
+    // 加载 CLAUDE.md 文件作为上下文
+    // 'project' - 加载项目目录下的 CLAUDE.md
+    // 'user' - 加载用户级别的 ~/.claude/CLAUDE.md
+    settingSources: ['project', 'user'],
   };
 
   if (sessionId) {
