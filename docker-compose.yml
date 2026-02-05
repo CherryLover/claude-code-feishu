@@ -1,7 +1,7 @@
 services:
   # 实例 A - 项目 A 专用
   bot-a:
-    build: .
+    image: ghcr.io/cherrylover/claude-code-feishu:latest
     container_name: claude-bot-a
     restart: unless-stopped
     environment:
@@ -17,7 +17,7 @@ services:
 
   # # 实例 B - 项目 B 专用（按需启用）
   # bot-b:
-  #   build: .
+  #   image: ghcr.io/cherrylover/claude-code-feishu:latest
   #   container_name: claude-bot-b
   #   restart: unless-stopped
   #   environment:
@@ -26,6 +26,6 @@ services:
   #     - FEISHU_APP_ID=${BOT_B_FEISHU_APP_ID}
   #     - FEISHU_APP_SECRET=${BOT_B_FEISHU_APP_SECRET}
   #   volumes:
-  #     - ${BOT_B_WORKSPACE:-./workspace-b}:/workspace
+  #     - /home/jiangjiwei/Code/another-project:/workspace
 
   # 按需复制上面的配置添加更多实例...
