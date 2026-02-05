@@ -12,8 +12,20 @@ const TOOL_ICONS: Record<string, string> = {
 };
 
 export function formatToolStart(toolName: string): string {
+  // Task 工具在 formatToolEnd 中完整输出，这里返回空
+  if (toolName === 'Task') {
+    return '';
+  }
   return `**${TOOL_ICONS[toolName] || `🔧 ${toolName}`}**`;
 }
+
+// Task 子代理类型图标
+const SUBAGENT_ICONS: Record<string, string> = {
+  'Explore': '🔍',
+  'Plan': '📋',
+  'Bash': '🖥️',
+  'general-purpose': '🤖',
+};
 
 export function formatToolEnd(toolName: string, input: string): string {
   try {
@@ -32,6 +44,19 @@ export function formatToolEnd(toolName: string, input: string): string {
     }
     if (toolName === 'Glob' && parsed.pattern) {
       return `📁 \`${parsed.pattern}\``;
+    }
+    // Task 工具特殊处理：🤖 Explore（描述）+ prompt
+    if (toolName === 'Task' && parsed.subagent_type) {
+      const icon = SUBAGENT_ICONS[parsed.subagent_type] || '🤖';
+      const desc = parsed.description || '';
+      let result = `${icon} **${parsed.subagent_type}**（${desc}）`;
+      if (parsed.prompt) {
+        const prompt = parsed.prompt.length > 150
+          ? parsed.prompt.slice(0, 150) + '...'
+          : parsed.prompt;
+        result += `\n${prompt}`;
+      }
+      return result;
     }
     return `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
   } catch {
