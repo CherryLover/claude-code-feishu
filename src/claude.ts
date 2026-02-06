@@ -109,10 +109,30 @@ export async function* streamClaudeChat(
       // 最终结果
       if (message.type === 'result') {
         const msg = message as any;
+        // 提取 usage 信息
+        let usage: ClaudeEvent['usage'] | undefined;
+        if (msg.modelUsage) {
+          const models = Object.keys(msg.modelUsage);
+          if (models.length > 0) {
+            let totalInput = 0;
+            let totalOutput = 0;
+            let contextWindow = 0;
+            let totalCost = 0;
+            for (const model of models) {
+              const m = msg.modelUsage[model];
+              totalInput += m.inputTokens || 0;
+              totalOutput += m.outputTokens || 0;
+              totalCost += m.costUSD || 0;
+              if (m.contextWindow > contextWindow) contextWindow = m.contextWindow;
+            }
+            usage = { inputTokens: totalInput, outputTokens: totalOutput, contextWindow, costUSD: msg.total_cost_usd ?? totalCost };
+          }
+        }
         yield {
           type: 'result',
           content: msg.subtype === 'success' ? msg.result : (msg.error || '执行出错'),
           sessionId: newSessionId || sessionId || undefined,
+          usage,
         };
       }
     }

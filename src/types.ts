@@ -5,6 +5,14 @@ export interface ClaudeEvent {
   toolOutput?: string;
   content?: string;
   sessionId?: string;
+  usage?: UsageInfo;
+}
+
+export interface UsageInfo {
+  inputTokens: number;
+  outputTokens: number;
+  contextWindow: number;
+  costUSD: number;
 }
 
 export interface Session {

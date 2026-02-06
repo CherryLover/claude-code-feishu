@@ -4,6 +4,7 @@ import { streamClaudeChat } from './claude';
 import { formatToolStart, formatToolEnd, formatToolResult, buildFeishuCard } from './formatter';
 import { MessageDedup } from './dedup';
 import { createFeishuToolsServer } from './tools';
+import { UsageInfo } from './types';
 
 const sessions = new Map<string, string>(); // chatId -> claudeSessionId
 const openIdToChatId = new Map<string, string>(); // openId -> chatId（私聊映射，供菜单事件使用）
@@ -280,6 +281,7 @@ async function handleMessage(client: Lark.Client, data: any) {
   abortControllers.set(chatId, abortController);
   const sessionId = sessions.get(chatId) || null;
   const chunks: string[] = [];
+  let usageInfo: UsageInfo | undefined;
 
   // 创建飞书工具服务器（每次请求创建，绑定当前 chatId）
   const feishuToolsServer = createFeishuToolsServer(client, chatId);
@@ -333,6 +335,7 @@ async function handleMessage(client: Lark.Client, data: any) {
           if (event.content) {
             chunks.push('\n' + event.content);
           }
+          usageInfo = event.usage;
           break;
         case 'error':
           console.log(`[Claude] 错误: ${event.content}`);
@@ -342,7 +345,10 @@ async function handleMessage(client: Lark.Client, data: any) {
     }
 
     // 最终更新为完整结果
-    const finalContent = chunks.join('\n') || '（无响应）';
+    let finalContent = chunks.join('\n') || '（无响应）';
+    if (usageInfo) {
+      finalContent += formatUsageInfo(usageInfo);
+    }
     console.log(`[飞书] 更新最终结果，长度: ${finalContent.length}`);
     await updateCard(client, messageId, 'Claude Code', finalContent);
   } catch (error: unknown) {
@@ -373,6 +379,14 @@ async function sendCard(client: Lark.Client, chatId: string, title: string, cont
     console.error(`[飞书] 消息发送失败: ${errMsg}`);
     return null;
   }
+}
+
+function formatUsageInfo(usage: UsageInfo): string {
+  const used = usage.inputTokens + usage.outputTokens;
+  const remaining = usage.contextWindow - used;
+  const percent = ((remaining / usage.contextWindow) * 100).toFixed(0);
+  const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+  return `\n\n---\n📊 上下文: ${formatTokens(used)} / ${formatTokens(usage.contextWindow)} tokens (剩余 ${percent}%) | 费用: $${usage.costUSD.toFixed(4)}`;
 }
 
 async function updateCard(client: Lark.Client, messageId: string, title: string, content: string) {
