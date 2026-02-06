@@ -18,6 +18,7 @@ async function* generateMessages(prompt: string): AsyncGenerator<any> {
 
 export interface StreamClaudeOptions {
   mcpServers?: Record<string, McpServer>;
+  abortSignal?: AbortSignal;
 }
 
 export async function* streamClaudeChat(
@@ -50,6 +51,11 @@ export async function* streamClaudeChat(
     const promptInput = options?.mcpServers ? generateMessages(prompt) : prompt;
 
     for await (const message of query({ prompt: promptInput, options: queryOptions })) {
+      // 检查中断信号
+      if (options?.abortSignal?.aborted) {
+        return;
+      }
+
       // 系统初始化消息 - 获取 session_id
       if (message.type === 'system' && message.subtype === 'init') {
         newSessionId = message.session_id;

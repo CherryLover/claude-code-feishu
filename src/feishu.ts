@@ -10,6 +10,8 @@ const openIdToChatId = new Map<string, string>(); // openId -> chatId（私聊�
 const dedup = new MessageDedup();
 // 跟踪正在处理中的聊天，避免并发
 const processing = new Set<string>();
+// 跟踪每个聊天的中断控制器，用于 stop 命令
+const abortControllers = new Map<string, AbortController>();
 
 // 模块级 client，供启动通知使用
 let feishuClient: Lark.Client | null = null;
@@ -129,6 +131,16 @@ async function handleMenuEvent(client: Lark.Client, eventKey: string, openId: st
       await sendCardToUser(client, openId, chatId, 'Claude Code', '✅ 会话已清除，开始新对话');
       break;
     }
+    case 'stop': {
+      console.log(`[菜单] 停止处理`);
+      if (chatId && abortControllers.has(chatId)) {
+        abortControllers.get(chatId)!.abort();
+        await sendCardToUser(client, openId, chatId, 'Claude Code', '⏹️ 已停止当前处理');
+      } else {
+        await sendCardToUser(client, openId, chatId, 'Claude Code', '💤 当前没有正在处理的任务');
+      }
+      break;
+    }
     case 'status': {
       console.log(`[菜单] 查询状态`);
       const hasSession = chatId ? sessions.has(chatId) : false;
@@ -235,6 +247,17 @@ async function handleMessage(client: Lark.Client, data: any) {
     return;
   }
 
+  if (text === '/stop') {
+    console.log(`[命令] 停止处理`);
+    if (abortControllers.has(chatId)) {
+      abortControllers.get(chatId)!.abort();
+      await sendCard(client, chatId, 'Claude Code', '⏹️ 已停止当前处理');
+    } else {
+      await sendCard(client, chatId, 'Claude Code', '💤 当前没有正在处理的任务');
+    }
+    return;
+  }
+
   if (text === '/status') {
     console.log(`[命令] 查询状态`);
     const hasSession = sessions.has(chatId);
@@ -250,6 +273,8 @@ async function handleMessage(client: Lark.Client, data: any) {
   // 调用 Claude
   console.log(`[Claude] 开始处理...`);
   processing.add(chatId);
+  const abortController = new AbortController();
+  abortControllers.set(chatId, abortController);
   const sessionId = sessions.get(chatId) || null;
   const chunks: string[] = [];
 
@@ -260,13 +285,23 @@ async function handleMessage(client: Lark.Client, data: any) {
   const messageId = await sendCard(client, chatId, 'Claude Code', '🔄 处理中...');
   if (!messageId) {
     processing.delete(chatId);
+    abortControllers.delete(chatId);
     return;
   }
 
   try {
-    for await (const event of streamClaudeChat(text, sessionId, {
+    const stream = streamClaudeChat(text, sessionId, {
       mcpServers: { 'feishu-tools': feishuToolsServer },
-    })) {
+      abortSignal: abortController.signal,
+    });
+
+    for await (const event of stream) {
+      if (abortController.signal.aborted) {
+        console.log(`[Claude] 用户中断处理`);
+        chunks.push('\n⏹️ **已被用户停止**');
+        break;
+      }
+
       switch (event.type) {
         case 'tool_start':
           console.log(`[Claude] 工具调用: ${event.toolName}`);
@@ -313,6 +348,7 @@ async function handleMessage(client: Lark.Client, data: any) {
     await updateCard(client, messageId, 'Claude Code', `❌ 错误: ${errMsg}`);
   } finally {
     processing.delete(chatId);
+    abortControllers.delete(chatId);
   }
 }
 
