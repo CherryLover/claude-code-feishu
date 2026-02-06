@@ -6,6 +6,7 @@ import { MessageDedup } from './dedup';
 import { createFeishuToolsServer } from './tools';
 
 const sessions = new Map<string, string>(); // chatId -> claudeSessionId
+const openIdToChatId = new Map<string, string>(); // openId -> chatId（私聊映射，供菜单事件使用）
 const dedup = new MessageDedup();
 // 跟踪正在处理中的聊天，避免并发
 const processing = new Set<string>();
@@ -54,12 +55,29 @@ export function startFeishuBot() {
         }
 
         const senderId = data.sender?.sender_id?.open_id || 'unknown';
+        // 私聊时记录 openId -> chatId 映射，供菜单事件使用
+        if (chatType === 'p2p' && senderId !== 'unknown') {
+          openIdToChatId.set(senderId, message.chat_id);
+        }
         console.log(`[收到消息] ${chatType === 'group' ? '群聊' : '私聊'} | chat_id: ${message.chat_id} | sender: ${senderId}`);
 
         // 4. 异步处理（立即返回，避免 3 秒超时）
         setImmediate(() => {
           handleMessage(client, data).catch((err) => {
             console.error('[错误] 处理消息失败:', err);
+          });
+        });
+      },
+      'application.bot.menu_v6': async (data: any) => {
+        const eventKey = data.event_key;
+        const openId = data.operator?.operator_id?.open_id;
+        if (!openId) return;
+
+        console.log(`[菜单] event_key: ${eventKey} | open_id: ${openId}`);
+
+        setImmediate(() => {
+          handleMenuEvent(client, eventKey, openId).catch((err) => {
+            console.error('[错误] 处理菜单事件失败:', err);
           });
         });
       },
@@ -96,6 +114,64 @@ async function sendStartupNotification(client: Lark.Client) {
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
     console.error(`[启动通知] 发送失败: ${errMsg}`);
+  }
+}
+
+async function handleMenuEvent(client: Lark.Client, eventKey: string, openId: string) {
+  const chatId = openIdToChatId.get(openId);
+
+  switch (eventKey) {
+    case 'clear': {
+      console.log(`[菜单] 清除会话`);
+      if (chatId) {
+        sessions.delete(chatId);
+      }
+      await sendCardToUser(client, openId, chatId, 'Claude Code', '✅ 会话已清除，开始新对话');
+      break;
+    }
+    case 'status': {
+      console.log(`[菜单] 查询状态`);
+      const hasSession = chatId ? sessions.has(chatId) : false;
+      await sendCardToUser(
+        client,
+        openId,
+        chatId,
+        'Claude Code',
+        hasSession ? '📍 当前有活跃会话' : '💤 无活跃会话',
+      );
+      break;
+    }
+    default:
+      console.log(`[菜单] 未知 event_key: ${eventKey}`);
+  }
+}
+
+// 发送卡片给用户，优先用 chat_id，没有则用 open_id
+async function sendCardToUser(
+  client: Lark.Client,
+  openId: string,
+  chatId: string | undefined,
+  title: string,
+  content: string,
+): Promise<string | null> {
+  const receiveIdType = chatId ? 'chat_id' : 'open_id';
+  const receiveId = chatId || openId;
+  try {
+    const resp = await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: {
+        receive_id: receiveId,
+        msg_type: 'interactive',
+        content: buildFeishuCard(title, content),
+      },
+    });
+    const messageId = resp.data?.message_id;
+    console.log(`[飞书] 菜单响应发送成功, message_id: ${messageId}`);
+    return messageId || null;
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.error(`[飞书] 菜单响应发送失败: ${errMsg}`);
+    return null;
   }
 }
 
