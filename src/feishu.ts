@@ -13,6 +13,8 @@ const dedup = new MessageDedup();
 const processing = new Set<string>();
 // 跟踪每个聊天的中断控制器，用于 stop 命令
 const abortControllers = new Map<string, AbortController>();
+// 存储卡片消息对应的原始文本（用于「复制原文」按钮回调）
+const cardRawContent = new Map<string, string>(); // messageId -> rawContent
 
 // 模块级 client，供启动通知使用
 let feishuClient: Lark.Client | null = null;
@@ -30,9 +32,8 @@ export function startFeishuBot() {
     loggerLevel: Lark.LoggerLevel.info,
   });
 
-  wsClient.start({
-    eventDispatcher: new Lark.EventDispatcher({}).register({
-      'im.message.receive_v1': async (data: any) => {
+  const eventDispatcher = new Lark.EventDispatcher({}).register({
+    'im.message.receive_v1': async (data: any) => {
         const message = data.message;
         if (!message) return;
 
@@ -84,8 +85,44 @@ export function startFeishuBot() {
           });
         });
       },
-    }),
+    'card.action.trigger': async (data: any) => {
+      const action = data?.action;
+      const value = action?.value;
+      if (value?.action === 'copy_raw') {
+        const messageId = data?.context?.open_message_id;
+        const openId = data?.operator?.open_id;
+        const rawContent = messageId ? cardRawContent.get(messageId) : undefined;
+
+        console.log(`[卡片回调] 复制原文 | message_id: ${messageId} | open_id: ${openId}`);
+
+        if (rawContent && openId) {
+          // 发送纯文本消息，方便用户复制
+          try {
+            await client.im.message.create({
+              params: { receive_id_type: 'open_id' },
+              data: {
+                receive_id: openId,
+                msg_type: 'text',
+                content: JSON.stringify({ text: rawContent }),
+              },
+            });
+          } catch (error: unknown) {
+            const errMsg = error instanceof Error ? error.message : '未知错误';
+            console.error(`[卡片回调] 发送纯文本失败: ${errMsg}`);
+          }
+        }
+
+        return {
+          toast: {
+            type: rawContent ? 'success' : 'info',
+            content: rawContent ? '已发送纯文本消息，可长按复制' : '原文内容已过期',
+          },
+        };
+      }
+    },
   });
+
+  wsClient.start({ eventDispatcher });
 
   console.log('飞书机器人已启动（WebSocket 长连接）');
 
@@ -281,6 +318,7 @@ async function handleMessage(client: Lark.Client, data: any) {
   abortControllers.set(chatId, abortController);
   const sessionId = sessions.get(chatId) || null;
   const chunks: string[] = [];
+  let resultContent = ''; // Claude 回复的纯文本，用于复制按钮
   let usageInfo: UsageInfo | undefined;
 
   // 创建飞书工具服务器（每次请求创建，绑定当前 chatId）
@@ -333,6 +371,7 @@ async function handleMessage(client: Lark.Client, data: any) {
             sessions.set(chatId, event.sessionId);
           }
           if (event.content) {
+            resultContent = event.content;
             chunks.push('\n' + event.content);
           }
           usageInfo = event.usage;
@@ -350,7 +389,11 @@ async function handleMessage(client: Lark.Client, data: any) {
       finalContent += formatUsageInfo(usageInfo);
     }
     console.log(`[飞书] 更新最终结果，长度: ${finalContent.length}`);
-    await updateCard(client, messageId, 'Claude Code', finalContent);
+    await updateCard(client, messageId, 'Claude Code', finalContent, resultContent || undefined);
+    // 存储原始内容，供「复制原文」回调使用
+    if (resultContent) {
+      cardRawContent.set(messageId, resultContent);
+    }
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
     console.error(`[错误] Claude 处理失败: ${errMsg}`);
@@ -389,12 +432,12 @@ function formatUsageInfo(usage: UsageInfo): string {
   return `\n\n---\n📊 上下文: ${formatTokens(used)} / ${formatTokens(usage.contextWindow)} tokens (剩余 ${percent}%) | 费用: $${usage.costUSD.toFixed(4)}`;
 }
 
-async function updateCard(client: Lark.Client, messageId: string, title: string, content: string) {
+async function updateCard(client: Lark.Client, messageId: string, title: string, content: string, copyContent?: string) {
   try {
     await client.im.message.patch({
       path: { message_id: messageId },
       data: {
-        content: buildFeishuCard(title, content),
+        content: buildFeishuCard(title, content, copyContent),
       },
     });
     console.log(`[飞书] 卡片更新成功`);

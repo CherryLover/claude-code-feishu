@@ -72,8 +72,31 @@ export function formatToolResult(output: string): string {
   return `\`\`\`\n${truncated}\n\`\`\``;
 }
 
-export function buildFeishuCard(title: string, content: string): string {
+export function buildFeishuCard(title: string, content: string, copyContent?: string): string {
   // 使用卡片 JSON v2 格式，支持更完整的 Markdown 语法（包括表格、标题等）
+  const elements: any[] = [
+    {
+      tag: 'markdown',
+      content,
+    },
+  ];
+
+  // 添加「复制原文」按钮（V2 中按钮直接放在 elements，通过回调发送纯文本）
+  if (copyContent) {
+    elements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '📋 复制原文' },
+      type: 'default',
+      size: 'small',
+      behaviors: [
+        {
+          type: 'callback',
+          value: { action: 'copy_raw' },
+        },
+      ],
+    });
+  }
+
   return JSON.stringify({
     schema: '2.0',
     config: {
@@ -85,12 +108,7 @@ export function buildFeishuCard(title: string, content: string): string {
       template: 'blue',
     },
     body: {
-      elements: [
-        {
-          tag: 'markdown',
-          content,
-        },
-      ],
+      elements,
     },
   });
 }
