@@ -123,6 +123,7 @@ async function handleMenuEvent(client: Lark.Client, eventKey: string, openId: st
   const chatId = openIdToChatId.get(openId);
 
   switch (eventKey) {
+    case '/clear':
     case 'clear': {
       console.log(`[菜单] 清除会话`);
       if (chatId) {
@@ -131,6 +132,7 @@ async function handleMenuEvent(client: Lark.Client, eventKey: string, openId: st
       await sendCardToUser(client, openId, chatId, 'Claude Code', '✅ 会话已清除，开始新对话');
       break;
     }
+    case '/stop':
     case 'stop': {
       console.log(`[菜单] 停止处理`);
       if (chatId && abortControllers.has(chatId)) {
@@ -141,6 +143,7 @@ async function handleMenuEvent(client: Lark.Client, eventKey: string, openId: st
       }
       break;
     }
+    case '/status':
     case 'status': {
       console.log(`[菜单] 查询状态`);
       const hasSession = chatId ? sessions.has(chatId) : false;
