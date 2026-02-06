@@ -39,8 +39,8 @@ export function startFeishuBot() {
           return;
         }
 
-        // 2. 只处理文本消息
-        if (message.message_type !== 'text') {
+        // 2. 只处理文本和富文本消息
+        if (message.message_type !== 'text' && message.message_type !== 'post') {
           console.log(`[跳过] 非文本消息: ${message.message_type}`);
           return;
         }
@@ -190,7 +190,24 @@ async function handleMessage(client: Lark.Client, data: any) {
   let text = '';
   try {
     const parsed = JSON.parse(message.content);
-    text = parsed.text?.trim() || '';
+    if (message.message_type === 'post') {
+      // 富文本消息：提取所有文本内容
+      const post = parsed.zh_cn || parsed.en_us || Object.values(parsed)[0] as any;
+      if (post?.content) {
+        const parts: string[] = [];
+        if (post.title) parts.push(post.title);
+        for (const line of post.content) {
+          const lineText = line
+            .filter((el: any) => el.tag === 'text' || el.tag === 'a')
+            .map((el: any) => el.text || '')
+            .join('');
+          if (lineText) parts.push(lineText);
+        }
+        text = parts.join('\n').trim();
+      }
+    } else {
+      text = parsed.text?.trim() || '';
+    }
   } catch {
     return;
   }
