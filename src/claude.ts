@@ -2,22 +2,43 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from './config';
 import { ClaudeEvent } from './types';
 
+// MCP 服务器类型
+type McpServer = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer>;
+
+// 生成 streaming input 消息（MCP 工具需要此格式）
+async function* generateMessages(prompt: string): AsyncGenerator<any> {
+  yield {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: prompt,
+    },
+  };
+}
+
+export interface StreamClaudeOptions {
+  mcpServers?: Record<string, McpServer>;
+}
+
 export async function* streamClaudeChat(
   prompt: string,
-  sessionId: string | null
+  sessionId: string | null,
+  options?: StreamClaudeOptions
 ): AsyncGenerator<ClaudeEvent> {
-  const options: Record<string, unknown> = {
+  const queryOptions: Record<string, unknown> = {
     cwd: config.workspace,
     includePartialMessages: true,
     permissionMode: 'bypassPermissions',
-    // 加载 CLAUDE.md 文件作为上下文
-    // 'project' - 加载项目目录下的 CLAUDE.md
-    // 'user' - 加载用户级别的 ~/.claude/CLAUDE.md
     settingSources: ['project', 'user'],
   };
 
   if (sessionId) {
-    options.resume = sessionId;
+    queryOptions.resume = sessionId;
+  }
+
+  // 注入 MCP 工具
+  if (options?.mcpServers) {
+    queryOptions.mcpServers = options.mcpServers;
   }
 
   let currentTool: string | null = null;
@@ -25,7 +46,10 @@ export async function* streamClaudeChat(
   let newSessionId: string | null = null;
 
   try {
-    for await (const message of query({ prompt, options })) {
+    // 使用 MCP 工具时需要 streaming input 模式
+    const promptInput = options?.mcpServers ? generateMessages(prompt) : prompt;
+
+    for await (const message of query({ prompt: promptInput, options: queryOptions })) {
       // 系统初始化消息 - 获取 session_id
       if (message.type === 'system' && message.subtype === 'init') {
         newSessionId = message.session_id;

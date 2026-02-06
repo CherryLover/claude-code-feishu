@@ -3,6 +3,7 @@ import { config } from './config';
 import { streamClaudeChat } from './claude';
 import { formatToolStart, formatToolEnd, formatToolResult, buildFeishuCard } from './formatter';
 import { MessageDedup } from './dedup';
+import { createFeishuToolsServer } from './tools';
 
 const sessions = new Map<string, string>(); // chatId -> claudeSessionId
 const dedup = new MessageDedup();
@@ -159,6 +160,9 @@ async function handleMessage(client: Lark.Client, data: any) {
   const sessionId = sessions.get(chatId) || null;
   const chunks: string[] = [];
 
+  // 创建飞书工具服务器（每次请求创建，绑定当前 chatId）
+  const feishuToolsServer = createFeishuToolsServer(client, chatId);
+
   // 先发送一条"处理中"的消息，获取 message_id
   const messageId = await sendCard(client, chatId, 'Claude Code', '🔄 处理中...');
   if (!messageId) {
@@ -167,7 +171,9 @@ async function handleMessage(client: Lark.Client, data: any) {
   }
 
   try {
-    for await (const event of streamClaudeChat(text, sessionId)) {
+    for await (const event of streamClaudeChat(text, sessionId, {
+      mcpServers: { 'feishu-tools': feishuToolsServer },
+    })) {
       switch (event.type) {
         case 'tool_start':
           console.log(`[Claude] 工具调用: ${event.toolName}`);
