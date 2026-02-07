@@ -6,8 +6,8 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
+# 安装 AI CLI 工具
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
 WORKDIR /app
 
