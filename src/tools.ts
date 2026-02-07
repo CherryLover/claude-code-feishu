@@ -3,7 +3,7 @@ import { z } from 'zod';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { getFileCategory, getFileType } from './file-utils';
+import { getFileCategory, getFileType } from './file-utils.js';
 
 export function createFeishuToolsServer(client: Lark.Client, chatId: string) {
   return createSdkMcpServer({

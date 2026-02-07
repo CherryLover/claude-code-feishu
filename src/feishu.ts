@@ -1,9 +1,9 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { config } from './config';
-import { streamChat, getProviderName } from './provider';
-import { formatToolStart, formatToolEnd, formatToolResult, buildFeishuCard } from './formatter';
-import { MessageDedup } from './dedup';
-import { UsageInfo } from './types';
+import { config } from './config.js';
+import { streamChat, getProviderName } from './provider.js';
+import { formatToolStart, formatToolEnd, formatToolResult, buildFeishuCard } from './formatter.js';
+import { MessageDedup } from './dedup.js';
+import { UsageInfo } from './types.js';
 
 const sessions = new Map<string, string>(); // chatId -> claudeSessionId
 const openIdToChatId = new Map<string, string>(); // openId -> chatId（私聊映射，供菜单事件使用）

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { config } from './config';
-import { ClaudeEvent, StreamChatOptions } from './types';
+import { config } from './config.js';
+import { ClaudeEvent, StreamChatOptions } from './types.js';
 
 // 详细日志文件路径
 const LOG_DIR = path.resolve(process.cwd(), 'log');

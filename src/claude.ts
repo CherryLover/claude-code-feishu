@@ -1,8 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { config } from './config';
-import { ClaudeEvent } from './types';
+import { config } from './config.js';
+import { ClaudeEvent } from './types.js';
 
 // 详细日志文件路径
 const LOG_DIR = path.resolve(process.cwd(), 'log');

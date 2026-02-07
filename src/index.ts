@@ -1,5 +1,5 @@
-import { config, validateConfig } from './config';
-import { startFeishuBot } from './feishu';
+import { config, validateConfig } from './config.js';
+import { startFeishuBot } from './feishu.js';
 
 validateConfig();
 

@@ -1,5 +1,5 @@
-import { config } from './config';
-import { ClaudeEvent, StreamChatOptions } from './types';
+import { config } from './config.js';
+import { ClaudeEvent, StreamChatOptions } from './types.js';
 
 export async function* streamChat(
   prompt: string,
@@ -7,11 +7,11 @@ export async function* streamChat(
   options?: StreamChatOptions,
 ): AsyncGenerator<ClaudeEvent> {
   if (config.aiProvider === 'codex') {
-    const { streamCodexChat } = await import('./codex-provider');
+    const { streamCodexChat } = await import('./codex-provider.js');
     yield* streamCodexChat(prompt, sessionId, options);
   } else {
-    const { streamClaudeChat } = await import('./claude');
-    const { createFeishuToolsServer } = await import('./tools');
+    const { streamClaudeChat } = await import('./claude.js');
+    const { createFeishuToolsServer } = await import('./tools.js');
 
     let mcpServers: Record<string, any> | undefined;
     if (options?.feishuClient && options?.chatId) {
