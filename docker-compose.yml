@@ -1,35 +1,32 @@
 services:
-  # 实例 A - 项目 A 专用
-  bot-a:
+  # Claude 实例
+  bot-claude:
     image: ghcr.io/cherrylover/claude-code-feishu:latest
-    container_name: claude-bot-a
+    container_name: claude-bot
     restart: unless-stopped
     environment:
-      # 容器内的工作目录，Claude 会在这个目录下工作
       - WORKSPACE=/workspace
-      - ANTHROPIC_API_KEY=${BOT_A_ANTHROPIC_API_KEY}
-      - FEISHU_APP_ID=${BOT_A_FEISHU_APP_ID}
-      - FEISHU_APP_SECRET=${BOT_A_FEISHU_APP_SECRET}
-      # 可选：Claude API 代理地址（如果需要走代理）
-      # - ANTHROPIC_BASE_URL=https://your-proxy.com/api
-      # 可选：启动时通知的用户（填 open_id 或 chat_id）
-      # - NOTIFY_USER_ID=ou_xxxxxx
+      - AI_PROVIDER=claude
+      - ANTHROPIC_API_KEY=${CLAUDE_ANTHROPIC_API_KEY}
+      - ANTHROPIC_BASE_URL=${CLAUDE_ANTHROPIC_BASE_URL:-}
+      - FEISHU_APP_ID=${CLAUDE_FEISHU_APP_ID}
+      - FEISHU_APP_SECRET=${CLAUDE_FEISHU_APP_SECRET}
+      - NOTIFY_USER_ID=${CLAUDE_NOTIFY_USER_ID:-}
     volumes:
-      # 宿主机路径:容器内路径
-      # 左边是宿主机上的真实项目目录，右边固定为 /workspace
       - /home/jiangjiwei/Code/my-project:/workspace
 
-  # # 实例 B - 项目 B 专用（按需启用）
-  # bot-b:
-  #   image: ghcr.io/cherrylover/claude-code-feishu:latest
-  #   container_name: claude-bot-b
-  #   restart: unless-stopped
-  #   environment:
-  #     - WORKSPACE=/workspace
-  #     - ANTHROPIC_API_KEY=${BOT_B_ANTHROPIC_API_KEY}
-  #     - FEISHU_APP_ID=${BOT_B_FEISHU_APP_ID}
-  #     - FEISHU_APP_SECRET=${BOT_B_FEISHU_APP_SECRET}
-  #   volumes:
-  #     - /home/jiangjiwei/Code/another-project:/workspace
-
-  # 按需复制上面的配置添加更多实例...
+  # Codex 实例
+  bot-codex:
+    image: ghcr.io/cherrylover/claude-code-feishu:latest
+    container_name: codex-bot
+    restart: unless-stopped
+    environment:
+      - WORKSPACE=/workspace
+      - AI_PROVIDER=codex
+      - OPENAI_API_KEY=${CODEX_OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${CODEX_OPENAI_BASE_URL:-}
+      - FEISHU_APP_ID=${CODEX_FEISHU_APP_ID}
+      - FEISHU_APP_SECRET=${CODEX_FEISHU_APP_SECRET}
+      - NOTIFY_USER_ID=${CODEX_NOTIFY_USER_ID:-}
+    volumes:
+      - /home/jiangjiwei/Code/my-project:/workspace
