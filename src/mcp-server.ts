@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
 /**
- * 独立的 stdio MCP 服务器，供 Codex CLI 子进程挂载使用。
- * 提供 send_file_to_user 工具，通过飞书 API 向用户发送文件。
+ * Codex CLI stdio MCP 服务器
  *
- * 环境变量：FEISHU_APP_ID, FEISHU_APP_SECRET
- * 优先从 process.env 读取，不存在时尝试加载项目 .env 文件。
+ * 这个文件专门处理 Codex CLI 的 MCP 集成（stdio 传输）。
+ * 底层业务逻辑调用 feishu-actions.ts，保持 MCP 层独立。
+ *
+ * 注意：这是独立入口点，需要自行处理环境变量加载。
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -15,14 +16,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import * as Lark from '@larksuiteoapi/node-sdk';
+import { sendFileToFeishu } from './feishu-actions.js';
 
-// MCP 服务器作为独立子进程运行，可能没有继承主进程的 .env 环境变量。
-// 不能用 dotenv（v17 会向 stdout 输出日志，破坏 MCP stdio 协议），手动解析 .env 文件。
+// --- 环境变量加载（独立进程需要自行处理）---
+
 const __mcpFilename = fileURLToPath(import.meta.url);
 const __mcpDirname = path.dirname(__mcpFilename);
 const projectRoot = path.resolve(__mcpDirname, '..');
 const envFilePath = path.join(projectRoot, '.env');
 
+// 手动解析 .env 文件（不能用 dotenv v17，它会向 stdout 输出日志破坏 MCP 协议）
 if (fs.existsSync(envFilePath)) {
   const envContent = fs.readFileSync(envFilePath, 'utf-8');
   for (const line of envContent.split('\n')) {
@@ -42,39 +45,10 @@ if (fs.existsSync(envFilePath)) {
       process.env[key] = value;
     }
   }
-  console.error(`[MCP] 已从 ${envFilePath} 加载环境变量`);
+  console.error(`[Codex MCP] 已从 ${envFilePath} 加载环境变量`);
 }
 
-// --- 文件分类逻辑（内联自 file-utils.ts，因为 MCP 服务器是独立入口点）---
-
-const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.tiff'];
-const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.m4a', '.ogg', '.opus', '.amr'];
-const FILE_TYPE_MAP: Record<string, string> = {
-  '.pdf': 'pdf',
-  '.doc': 'doc',
-  '.docx': 'docx',
-  '.xls': 'xls',
-  '.xlsx': 'xlsx',
-  '.ppt': 'ppt',
-  '.pptx': 'pptx',
-  '.mp4': 'mp4',
-};
-
-type FileCategory = 'image' | 'audio' | 'file';
-
-function getFileCategory(filePath: string): FileCategory {
-  const ext = path.extname(filePath).toLowerCase();
-  if (IMAGE_EXTENSIONS.includes(ext)) return 'image';
-  if (AUDIO_EXTENSIONS.includes(ext)) return 'audio';
-  return 'file';
-}
-
-function getFileType(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  return FILE_TYPE_MAP[ext] || 'stream';
-}
-
-// --- 懒加载飞书客户端（避免启动时因缺环境变量而崩溃，导致 MCP 工具不可见）---
+// --- 懒加载飞书客户端 ---
 
 let larkClient: Lark.Client | null = null;
 
@@ -92,7 +66,7 @@ function getLarkClient(): Lark.Client {
       // 禁用 SDK 的 info 日志，避免污染 stdout（破坏 MCP stdio 协议）
       loggerLevel: Lark.LoggerLevel.error,
     });
-    console.error('[MCP] 飞书客户端初始化成功');
+    console.error('[Codex MCP] 飞书客户端初始化成功');
   }
   return larkClient;
 }
@@ -115,134 +89,18 @@ server.tool(
   async (args) => {
     const { file_path: filePath, chat_id: chatId, message } = args;
 
-    // 检查文件是否存在
-    if (!fs.existsSync(filePath)) {
-      return {
-        content: [{ type: 'text' as const, text: `错误：文件不存在 - ${filePath}` }],
-      };
-    }
+    const client = getLarkClient();
+    const result = await sendFileToFeishu(
+      client,
+      chatId,
+      filePath,
+      message,
+      '[Codex MCP]'
+    );
 
-    // 检查文件大小（飞书限制：图片 10MB，文件 30MB）
-    const stats = fs.statSync(filePath);
-    const fileSizeMB = stats.size / (1024 * 1024);
-    const category = getFileCategory(filePath);
-
-    if (category === 'image' && fileSizeMB > 10) {
-      return {
-        content: [{ type: 'text' as const, text: `错误：图片文件超过 10MB 限制（当前 ${fileSizeMB.toFixed(2)}MB）` }],
-      };
-    }
-    if (fileSizeMB > 30) {
-      return {
-        content: [{ type: 'text' as const, text: `错误：文件超过 30MB 限制（当前 ${fileSizeMB.toFixed(2)}MB）` }],
-      };
-    }
-
-    try {
-      const client = getLarkClient();
-      const fileName = path.basename(filePath);
-
-      if (category === 'image') {
-        // 上传图片
-        const uploadRes = await client.im.image.create({
-          data: {
-            image_type: 'message',
-            image: fs.createReadStream(filePath),
-          },
-        });
-
-        const imageKey = (uploadRes as any)?.image_key || (uploadRes as any)?.data?.image_key;
-        if (!imageKey) {
-          return {
-            content: [{ type: 'text' as const, text: '错误：图片上传失败，未获取到 image_key' }],
-          };
-        }
-
-        // 发送图片消息
-        await client.im.message.create({
-          params: { receive_id_type: 'chat_id' },
-          data: {
-            receive_id: chatId,
-            msg_type: 'image',
-            content: JSON.stringify({ image_key: imageKey }),
-          },
-        });
-
-        console.error(`[MCP] 图片已发送: ${fileName}`);
-        return {
-          content: [{ type: 'text' as const, text: `图片 "${fileName}" 已发送给用户${message ? `，说明：${message}` : ''}` }],
-        };
-      } else if (category === 'audio') {
-        // 上传音频文件
-        const uploadRes = await client.im.file.create({
-          data: {
-            file_type: 'opus',
-            file_name: fileName,
-            file: fs.createReadStream(filePath),
-          },
-        });
-
-        const fileKey = (uploadRes as any)?.file_key || (uploadRes as any)?.data?.file_key;
-        if (!fileKey) {
-          return {
-            content: [{ type: 'text' as const, text: '错误：音频上传失败，未获取到 file_key' }],
-          };
-        }
-
-        // 发送音频消息
-        await client.im.message.create({
-          params: { receive_id_type: 'chat_id' },
-          data: {
-            receive_id: chatId,
-            msg_type: 'audio',
-            content: JSON.stringify({ file_key: fileKey }),
-          },
-        });
-
-        console.error(`[MCP] 音频已发送: ${fileName}`);
-        return {
-          content: [{ type: 'text' as const, text: `音频 "${fileName}" 已发送给用户${message ? `，说明：${message}` : ''}` }],
-        };
-      } else {
-        // 上传普通文件
-        const fileType = getFileType(filePath);
-        const uploadRes = await client.im.file.create({
-          data: {
-            file_type: fileType as any,
-            file_name: fileName,
-            file: fs.createReadStream(filePath),
-          },
-        });
-
-        const fileKey = (uploadRes as any)?.file_key || (uploadRes as any)?.data?.file_key;
-        if (!fileKey) {
-          return {
-            content: [{ type: 'text' as const, text: '错误：文件上传失败，未获取到 file_key' }],
-          };
-        }
-
-        // 发送文件消息
-        await client.im.message.create({
-          params: { receive_id_type: 'chat_id' },
-          data: {
-            receive_id: chatId,
-            msg_type: 'file',
-            content: JSON.stringify({ file_key: fileKey }),
-          },
-        });
-
-        console.error(`[MCP] 文件已发送: ${fileName}`);
-        return {
-          content: [{ type: 'text' as const, text: `文件 "${fileName}" 已发送给用户${message ? `，说明：${message}` : ''}` }],
-        };
-      }
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : '未知错误';
-      console.error(`[MCP] 文件发送失败: ${errMsg}`);
-      return {
-        content: [{ type: 'text' as const, text: `错误：文件发送失败 - ${errMsg}` }],
-      };
-    }
+    return {
+      content: [{ type: 'text' as const, text: result.message }],
+    };
   }
 );
 
@@ -251,27 +109,26 @@ server.tool(
 async function main() {
   // 捕获未处理的异常和 rejection，防止进程意外退出
   process.on('uncaughtException', (err) => {
-    console.error('[MCP] 未捕获的异常:', err);
+    console.error('[Codex MCP] 未捕获的异常:', err);
   });
   process.on('unhandledRejection', (reason) => {
-    console.error('[MCP] 未处理的 Promise rejection:', reason);
+    console.error('[Codex MCP] 未处理的 Promise rejection:', reason);
   });
 
   const transport = new StdioServerTransport();
 
   // 监听传输层关闭事件
   transport.onclose = () => {
-    console.error('[MCP] 传输层关闭');
+    console.error('[Codex MCP] 传输层关闭');
   };
 
   await server.connect(transport);
-  console.error('[MCP] feishu-tools stdio 服务器已启动');
+  console.error('[Codex MCP] feishu-tools stdio 服务器已启动');
 
   // MCP SDK 的 StdioServerTransport 会保持进程运行
-  // 不需要额外的保活逻辑
 }
 
 main().catch((err) => {
-  console.error('[MCP] 启动失败:', err);
+  console.error('[Codex MCP] 启动失败:', err);
   process.exit(1);
 });
