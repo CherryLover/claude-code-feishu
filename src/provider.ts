@@ -8,7 +8,12 @@ export async function* streamChat(
 ): AsyncGenerator<ClaudeEvent> {
   if (config.aiProvider === 'codex') {
     const { streamCodexChat } = await import('./codex-provider.js');
-    yield* streamCodexChat(prompt, sessionId, options);
+    // 注入 chatId 上下文，让 Codex 知道 MCP 工具的 chat_id 参数该传什么
+    let codexPrompt = prompt;
+    if (options?.chatId) {
+      codexPrompt = `[系统信息] 当前飞书聊天ID: ${options.chatId}\n当用户要求发送文件时，请使用 send_file_to_user 工具，chat_id 参数传入上述聊天ID。\n---\n${prompt}`;
+    }
+    yield* streamCodexChat(codexPrompt, sessionId, options);
   } else {
     const { streamClaudeChat } = await import('./claude.js');
     const { createFeishuToolsServer } = await import('./tools.js');

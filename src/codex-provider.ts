@@ -1,7 +1,12 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 import { config } from './config.js';
 import { ClaudeEvent, StreamChatOptions } from './types.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // 详细日志文件路径
 const LOG_DIR = path.resolve(process.cwd(), 'log');
@@ -34,6 +39,60 @@ function logDetail(eventType: string, data: unknown): void {
 // Codex SDK 是 ESM-only，需要动态 import
 let codexInstance: any = null;
 
+/**
+ * 确保 feishu-tools MCP 服务器已注册到 Codex 全局配置。
+ * Codex CLI 在启动时读 ~/.codex/config.toml 发现 MCP 服务器，
+ * 通过 SDK config (--config) 覆盖的方式无法触发 MCP 服务器启动。
+ *
+ * 注意：需要在配置中设置 cwd 让 MCP 服务器能找到 .env 文件。
+ */
+function ensureMcpServerRegistered(): void {
+  // 始终指向编译后的 dist/mcp-server.js，无论当前是 dev(tsx/src) 还是 prod(node/dist) 模式
+  const projectRoot = path.resolve(__dirname, '..');
+  const mcpServerPath = path.join(projectRoot, 'dist', 'mcp-server.js');
+  const codexConfigPath = path.join(process.env.HOME || '/root', '.codex', 'config.toml');
+
+  // 读取现有配置
+  let currentConfig = '';
+  if (fs.existsSync(codexConfigPath)) {
+    currentConfig = fs.readFileSync(codexConfigPath, 'utf-8');
+  }
+
+  // 检查是否需要更新（路径或 cwd 不对）
+  const hasCorrectPath = currentConfig.includes(mcpServerPath);
+  const hasCorrectCwd = currentConfig.includes(`cwd = "${projectRoot}"`);
+
+  if (hasCorrectPath && hasCorrectCwd) {
+    console.log(`[Codex] MCP feishu-tools 已注册: ${mcpServerPath}`);
+    return;
+  }
+
+  // 需要更新配置
+  try {
+    // 先移除旧配置
+    try { execSync('codex mcp remove feishu-tools', { stdio: 'ignore' }); } catch { /* ignore */ }
+
+    // 重新读取配置（移除后）
+    currentConfig = fs.existsSync(codexConfigPath)
+      ? fs.readFileSync(codexConfigPath, 'utf-8')
+      : '';
+
+    // 手动追加 MCP 服务器配置，包含 cwd 设置
+    const mcpConfig = `
+[mcp_servers.feishu-tools]
+command = "node"
+args = ["${mcpServerPath}"]
+cwd = "${projectRoot}"
+`;
+
+    fs.appendFileSync(codexConfigPath, mcpConfig);
+    console.log(`[Codex] MCP feishu-tools 注册成功: ${mcpServerPath} (cwd: ${projectRoot})`);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : '未知错误';
+    console.error(`[Codex] MCP feishu-tools 注册失败: ${errMsg}`);
+  }
+}
+
 async function getCodex(): Promise<any> {
   if (!codexInstance) {
     // Codex CLI 优先使用 CODEX_API_KEY 进行认证
@@ -41,6 +100,9 @@ async function getCodex(): Promise<any> {
     if (!process.env.CODEX_API_KEY && process.env.OPENAI_API_KEY) {
       process.env.CODEX_API_KEY = process.env.OPENAI_API_KEY;
     }
+
+    // 注册 MCP 服务器到 Codex 全局配置
+    ensureMcpServerRegistered();
 
     const { Codex } = await import('@openai/codex-sdk');
     codexInstance = new Codex({
@@ -107,6 +169,10 @@ export async function* streamCodexChat(
           } else if (item.type === 'file_change') {
             console.log(`[Codex] 工具调用: Edit`);
             yield { type: 'tool_start', toolName: 'Edit' };
+          } else if (item.type === 'mcp_tool_call') {
+            const toolName = `MCP:${item.server}/${item.tool}`;
+            console.log(`[Codex] MCP 工具调用: ${toolName}`);
+            yield { type: 'tool_start', toolName };
           }
           break;
         }
@@ -138,6 +204,28 @@ export async function* streamCodexChat(
             const diffStr = typeof diff === 'string' ? diff : JSON.stringify(diff);
             if (diffStr) {
               yield { type: 'tool_result', toolOutput: diffStr };
+            }
+          } else if (item.type === 'mcp_tool_call') {
+            const toolName = `MCP:${item.server}/${item.tool}`;
+            const args = typeof item.arguments === 'string'
+              ? item.arguments
+              : JSON.stringify(item.arguments || {});
+            console.log(`[Codex] MCP 完成: ${toolName}`);
+            yield {
+              type: 'tool_end',
+              toolName,
+              toolInput: args,
+            };
+            // 输出结果或错误
+            if (item.error) {
+              yield { type: 'tool_result', toolOutput: `错误: ${item.error.message}` };
+            } else if (item.result) {
+              const resultText = item.result.content
+                ?.map((c: any) => c.text || JSON.stringify(c))
+                .join('\n') || '';
+              if (resultText) {
+                yield { type: 'tool_result', toolOutput: resultText };
+              }
             }
           } else if (item.type === 'reasoning') {
             if (item.text) {
