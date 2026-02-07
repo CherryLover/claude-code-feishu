@@ -17,6 +17,8 @@ const cardRawContent = new Map<string, string>(); // messageId -> rawContent
 
 // 模块级 client，供启动通知使用
 let feishuClient: Lark.Client | null = null;
+// 机器人自身的 open_id，用于群聊中判断是否 @了自己
+let botOpenId: string | null = null;
 
 export function startFeishuBot() {
   const client = new Lark.Client({
@@ -48,11 +50,14 @@ export function startFeishuBot() {
           return;
         }
 
-        // 3. 群聊中只响应 @机器人的消息
+        // 3. 群聊中只响应 @自己的消息
         const chatType = message.chat_type;
         if (chatType === 'group') {
           const mentions = data.message?.mentions;
-          if (!mentions || mentions.length === 0) {
+          const isMentioned = botOpenId
+            ? mentions?.some((m: any) => m.id?.open_id === botOpenId)
+            : mentions && mentions.length > 0; // fallback: 未获取到 botOpenId 时保持原逻辑
+          if (!isMentioned) {
             return;
           }
         }
@@ -122,6 +127,14 @@ export function startFeishuBot() {
   });
 
   wsClient.start({ eventDispatcher });
+
+  // 获取机器人自身的 open_id
+  client.request({ method: 'GET', url: '/open-apis/bot/v3/info/' }).then((resp: any) => {
+    botOpenId = resp?.bot?.open_id || null;
+    console.log(`[初始化] 机器人 open_id: ${botOpenId}`);
+  }).catch((err: any) => {
+    console.error('[初始化] 获取机器人信息失败:', err);
+  });
 
   console.log('飞书机器人已启动（WebSocket 长连接）');
 
