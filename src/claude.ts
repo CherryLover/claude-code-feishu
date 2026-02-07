@@ -1,6 +1,36 @@
+import fs from 'fs';
+import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from './config';
 import { ClaudeEvent } from './types';
+
+// 详细日志文件路径
+const LOG_DIR = path.resolve(process.cwd(), 'log');
+const DETAIL_LOG_PATH = path.join(LOG_DIR, 'claude-detail.log');
+
+// 确保 log 目录存在
+if (!fs.existsSync(LOG_DIR)) {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
+function logDetail(eventType: string, data: unknown): void {
+  const now = new Date();
+  const timestamp = now.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).replace(/\//g, '-');
+  const json = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  const line = `[${timestamp}] [${eventType}] ${json}\n`;
+  fs.appendFile(DETAIL_LOG_PATH, line, (err) => {
+    if (err) console.error('[Claude] 写入详情日志失败:', err.message);
+  });
+}
 
 // MCP 服务器类型
 type McpServer = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer>;
@@ -53,12 +83,17 @@ export async function* streamClaudeChat(
     for await (const message of query({ prompt: promptInput, options: queryOptions })) {
       // 检查中断信号
       if (options?.abortSignal?.aborted) {
+        logDetail('aborted', { reason: 'AbortSignal triggered' });
         return;
       }
+
+      // 记录原始消息
+      logDetail(message.type, message);
 
       // 系统初始化消息 - 获取 session_id
       if (message.type === 'system' && message.subtype === 'init') {
         newSessionId = message.session_id;
+        logDetail('session_init', { sessionId: message.session_id });
       }
 
       // 流式事件（需要 includePartialMessages: true）
@@ -138,6 +173,7 @@ export async function* streamClaudeChat(
     }
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
+    logDetail('error', { message: errMsg, stack: error instanceof Error ? error.stack : undefined });
     yield { type: 'error', content: errMsg };
   }
 }
