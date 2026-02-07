@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config({ override: true });
+
 export const config = {
   // AI Provider: 'claude' | 'codex'
   aiProvider: (process.env.AI_PROVIDER || 'claude') as 'claude' | 'codex',

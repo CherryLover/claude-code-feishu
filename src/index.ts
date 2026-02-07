@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { config, validateConfig } from './config';
 import { startFeishuBot } from './feishu';
 
