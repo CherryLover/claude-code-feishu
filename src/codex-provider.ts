@@ -36,6 +36,12 @@ let codexInstance: any = null;
 
 async function getCodex(): Promise<any> {
   if (!codexInstance) {
+    // Codex CLI 优先使用 CODEX_API_KEY 进行认证
+    // 如果只设置了 OPENAI_API_KEY，复制到 CODEX_API_KEY 确保认证正常
+    if (!process.env.CODEX_API_KEY && process.env.OPENAI_API_KEY) {
+      process.env.CODEX_API_KEY = process.env.OPENAI_API_KEY;
+    }
+
     const { Codex } = await import('@openai/codex-sdk');
     codexInstance = new Codex({
       config: {
