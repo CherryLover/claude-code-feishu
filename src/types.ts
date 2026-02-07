@@ -11,8 +11,14 @@ export interface ClaudeEvent {
 export interface UsageInfo {
   inputTokens: number;
   outputTokens: number;
-  contextWindow: number;
-  costUSD: number;
+  contextWindow?: number;
+  costUSD?: number;
+}
+
+export interface StreamChatOptions {
+  abortSignal?: AbortSignal;
+  feishuClient?: any;
+  chatId?: string;
 }
 
 export interface Session {

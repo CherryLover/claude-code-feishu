@@ -1,9 +1,8 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { config } from './config';
-import { streamClaudeChat } from './claude';
+import { streamChat, getProviderName } from './provider';
 import { formatToolStart, formatToolEnd, formatToolResult, buildFeishuCard } from './formatter';
 import { MessageDedup } from './dedup';
-import { createFeishuToolsServer } from './tools';
 import { UsageInfo } from './types';
 
 const sessions = new Map<string, string>(); // chatId -> claudeSessionId
@@ -311,21 +310,19 @@ async function handleMessage(client: Lark.Client, data: any) {
     return;
   }
 
-  // 调用 Claude
-  console.log(`[Claude] 开始处理...`);
+  // 调用 AI
+  const providerName = getProviderName();
+  console.log(`[${providerName}] 开始处理...`);
   processing.add(chatId);
   const abortController = new AbortController();
   abortControllers.set(chatId, abortController);
   const sessionId = sessions.get(chatId) || null;
   const chunks: string[] = [];
-  let resultContent = ''; // Claude 回复的纯文本，用于复制按钮
+  let resultContent = ''; // AI 回复的纯文本，用于复制按钮
   let usageInfo: UsageInfo | undefined;
 
-  // 创建飞书工具服务器（每次请求创建，绑定当前 chatId）
-  const feishuToolsServer = createFeishuToolsServer(client, chatId);
-
   // 先发送一条"处理中"的消息，获取 message_id
-  const messageId = await sendCard(client, chatId, 'Claude Code', '🔄 处理中...');
+  const messageId = await sendCard(client, chatId, providerName, '🔄 处理中...');
   if (!messageId) {
     processing.delete(chatId);
     abortControllers.delete(chatId);
@@ -333,40 +330,41 @@ async function handleMessage(client: Lark.Client, data: any) {
   }
 
   try {
-    const stream = streamClaudeChat(text, sessionId, {
-      mcpServers: { 'feishu-tools': feishuToolsServer },
+    const stream = streamChat(text, sessionId, {
       abortSignal: abortController.signal,
+      feishuClient: client,
+      chatId,
     });
 
     for await (const event of stream) {
       if (abortController.signal.aborted) {
-        console.log(`[Claude] 用户中断处理`);
+        console.log(`[${providerName}] 用户中断处理`);
         chunks.push('\n⏹️ **已被用户停止**');
         break;
       }
 
       switch (event.type) {
         case 'tool_start':
-          console.log(`[Claude] 工具调用: ${event.toolName}`);
+          console.log(`[${providerName}] 工具调用: ${event.toolName}`);
           chunks.push(formatToolStart(event.toolName!));
           // 实时更新卡片
-          await updateCard(client, messageId, 'Claude Code', chunks.join('\n') + '\n\n🔄 执行中...');
+          await updateCard(client, messageId, providerName, chunks.join('\n') + '\n\n🔄 执行中...');
           break;
         case 'tool_end':
-          console.log(`[Claude] 工具输入: ${event.toolInput?.slice(0, 100)}...`);
+          console.log(`[${providerName}] 工具输入: ${event.toolInput?.slice(0, 100)}...`);
           chunks.push(formatToolEnd(event.toolName!, event.toolInput || ''));
-          await updateCard(client, messageId, 'Claude Code', chunks.join('\n') + '\n\n🔄 等待结果...');
+          await updateCard(client, messageId, providerName, chunks.join('\n') + '\n\n🔄 等待结果...');
           break;
         case 'tool_result':
-          console.log(`[Claude] 工具结果: ${event.toolOutput?.slice(0, 100)}...`);
+          console.log(`[${providerName}] 工具结果: ${event.toolOutput?.slice(0, 100)}...`);
           if (event.toolOutput) {
             chunks.push(formatToolResult(event.toolOutput));
           }
           chunks.push('---');
-          await updateCard(client, messageId, 'Claude Code', chunks.join('\n') + '\n\n🔄 继续处理...');
+          await updateCard(client, messageId, providerName, chunks.join('\n') + '\n\n🔄 继续处理...');
           break;
         case 'result':
-          console.log(`[Claude] 处理完成`);
+          console.log(`[${providerName}] 处理完成`);
           if (event.sessionId) {
             sessions.set(chatId, event.sessionId);
           }
@@ -377,7 +375,7 @@ async function handleMessage(client: Lark.Client, data: any) {
           usageInfo = event.usage;
           break;
         case 'error':
-          console.log(`[Claude] 错误: ${event.content}`);
+          console.log(`[${providerName}] 错误: ${event.content}`);
           chunks.push(`\n❌ **错误：** ${event.content}`);
           break;
       }
@@ -389,7 +387,7 @@ async function handleMessage(client: Lark.Client, data: any) {
       finalContent += formatUsageInfo(usageInfo);
     }
     console.log(`[飞书] 更新最终结果，长度: ${finalContent.length}`);
-    await updateCard(client, messageId, 'Claude Code', finalContent, resultContent || undefined);
+    await updateCard(client, messageId, providerName, finalContent, resultContent || undefined);
     // 存储原始内容，供「复制原文」回调使用
     if (resultContent) {
       cardRawContent.set(messageId, resultContent);
@@ -397,7 +395,7 @@ async function handleMessage(client: Lark.Client, data: any) {
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
     console.error(`[错误] Claude 处理失败: ${errMsg}`);
-    await updateCard(client, messageId, 'Claude Code', `❌ 错误: ${errMsg}`);
+    await updateCard(client, messageId, providerName, `❌ 错误: ${errMsg}`);
   } finally {
     processing.delete(chatId);
     abortControllers.delete(chatId);
@@ -426,10 +424,23 @@ async function sendCard(client: Lark.Client, chatId: string, title: string, cont
 
 function formatUsageInfo(usage: UsageInfo): string {
   const used = usage.inputTokens + usage.outputTokens;
-  const remaining = usage.contextWindow - used;
-  const percent = ((remaining / usage.contextWindow) * 100).toFixed(0);
   const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
-  return `\n\n---\n📊 上下文: ${formatTokens(used)} / ${formatTokens(usage.contextWindow)} tokens (剩余 ${percent}%) | 费用: $${usage.costUSD.toFixed(4)}`;
+
+  if (usage.contextWindow) {
+    const remaining = usage.contextWindow - used;
+    const percent = ((remaining / usage.contextWindow) * 100).toFixed(0);
+    let info = `\n\n---\n📊 上下文: ${formatTokens(used)} / ${formatTokens(usage.contextWindow)} tokens (剩余 ${percent}%)`;
+    if (usage.costUSD != null) {
+      info += ` | 费用: $${usage.costUSD.toFixed(4)}`;
+    }
+    return info;
+  }
+
+  let info = `\n\n---\n📊 Tokens: ${formatTokens(used)} (输入: ${formatTokens(usage.inputTokens)}, 输出: ${formatTokens(usage.outputTokens)})`;
+  if (usage.costUSD != null) {
+    info += ` | 费用: $${usage.costUSD.toFixed(4)}`;
+  }
+  return info;
 }
 
 async function updateCard(client: Lark.Client, messageId: string, title: string, content: string, copyContent?: string) {

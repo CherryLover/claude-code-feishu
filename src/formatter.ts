@@ -9,6 +9,7 @@ const TOOL_ICONS: Record<string, string> = {
   'WebFetch': '🔗 获取网页',
   'Task': '🤖 子任务',
   'TodoWrite': '📋 任务列表',
+  'Reasoning': '💭 思考',
 };
 
 export function formatToolStart(toolName: string): string {
@@ -44,6 +45,13 @@ export function formatToolEnd(toolName: string, input: string): string {
     }
     if (toolName === 'Glob' && parsed.pattern) {
       return `📁 \`${parsed.pattern}\``;
+    }
+    // Reasoning（Codex 思考过程）
+    if (toolName === 'Reasoning' && parsed.reasoning) {
+      const text = parsed.reasoning.length > 200
+        ? parsed.reasoning.slice(0, 200) + '...'
+        : parsed.reasoning;
+      return text;
     }
     // Task 工具特殊处理：🤖 Explore（描述）+ prompt
     if (toolName === 'Task' && parsed.subagent_type) {
