@@ -13,6 +13,8 @@ if (!fs.existsSync(LOG_DIR)) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
 }
 
+fs.writeFileSync(DETAIL_LOG_PATH, '');
+
 function logDetail(eventType: string, data: unknown): void {
   const now = new Date();
   const timestamp = now.toLocaleString('zh-CN', {

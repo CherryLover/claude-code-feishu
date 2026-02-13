@@ -19,6 +19,8 @@ export interface StreamChatOptions {
   abortSignal?: AbortSignal;
   feishuClient?: any;
   chatId?: string;
+  senderOpenId?: string;
+  senderName?: string;
 }
 
 export interface Session {

@@ -1,0 +1,144 @@
+# 飞书主动交互工具实现计划
+
+## 架构决策
+
+沿用现有的三层分离架构：
+- **业务逻辑层**: `src/feishu-api.ts`（新增）— 飞书 REST API 封装，与 MCP 无关
+- **Claude MCP 层**: 在 `src/tools.ts` 中新增工具注册
+- **Codex MCP 层**: 在 `src/mcp-server.ts` 中新增工具注册
+
+复用现有的 Lark Client 实例（`@larksuiteoapi/node-sdk`），它已自带 token 缓存和刷新。
+
+---
+
+## Step 1: 新建 `src/feishu-api.ts` — 飞书 API 底层封装
+
+纯业务逻辑，供两个 MCP 层共享。包含 4 个函数：
+
+### 1.1 `searchUser(client, query)` — 搜索用户
+
+**API 选型**：飞书的模糊搜索接口 `/contact/v3/users/search` 只支持 `user_access_token`，机器人（`tenant_access_token`）无法使用。
+
+**实际方案 — 两步策略**：
+1. **先精确查找**：`POST /contact/v3/users/batch_get_id`
+   - 判断 query 是否像邮箱（含 @）或手机号（纯数字/+86 开头）
+   - 如果是，直接调用精确匹配，拿到 open_id
+   - 再通过 `GET /contact/v3/users/:user_id` 获取完整信息（姓名、部门等）
+2. **否则按部门遍历**：`GET /contact/v3/users/find_by_department`
+   - 从根部门 (department_id=0) 开始，递归遍历所有用户
+   - 在返回结果中按姓名 `.includes(query)` 过滤
+   - 支持分页（page_token）
+   - 需要有全员通讯录权限范围
+
+返回类型：
+```typescript
+interface FeishuUser {
+  open_id: string;
+  name: string;
+  email?: string;
+  mobile?: string;
+  department_name?: string;
+}
+```
+
+### 1.2 `sendMessageToUser(client, openId, content)` — 发私聊消息
+
+调用 `client.im.message.create()`，`receive_id_type` 使用 `open_id`。
+- 消息格式用 `text` 类型（简单直接）
+- 处理用户未开启机器人的错误（catch 并返回友好提示）
+
+### 1.3 `createTask(client, params)` — 创建待办任务
+
+调用 Task v2 API（飞书 SDK 没有内置 task 模块，需要用 `client.request()`）：
+- `POST /open-apis/task/v2/tasks` — 创建任务
+- 请求体设置 `summary`（标题）、`description`、`due`（截止时间）
+- `members` 中添加执行者：`{ id: openId, type: "user", role: "assignee" }`
+- 截止时间格式：传入 ISO 8601 字符串，转换为 Unix 时间戳
+
+### 1.4 `createCalendarEvent(client, params)` — 创建日程
+
+调用 Calendar v4 API：
+- 先 `GET /open-apis/calendar/v4/calendars?type=primary` 获取机器人主日历 ID（缓存起来）
+- 再 `POST /open-apis/calendar/v4/calendars/:calendar_id/events` 创建日程
+- 请求体设置 `summary`、`description`、`start_time`、`end_time`
+- `attendees` 添加参与者：`{ type: "user", user_id: openId }`
+- 可选创建视频会议：`vchat: { vc_type: "vc" }`
+- 时间格式：ISO 8601 → Unix 时间戳
+
+每个函数都返回 `ActionResult`（复用 feishu-actions.ts 的现有类型），错误统一 try-catch。
+
+---
+
+## Step 2: 在 `src/tools.ts` 中注册 Claude MCP 工具
+
+在 `createFeishuToolsServer()` 的 tools 数组中新增 4 个工具：
+
+```typescript
+tools: [
+  tool('send_file_to_user', ...),  // 已有
+
+  tool('search_user', '在组织通讯录中搜索用户。支持按姓名模糊搜索，或按邮箱、手机号精确查找。返回用户的 open_id、姓名等信息。发送消息、创建任务、创建日程前，必须先用此工具获取目标用户的 open_id。', {
+    query: z.string().describe('搜索关键词：用户姓名、邮箱或手机号'),
+  }, handler),
+
+  tool('send_message_to_user', '给指定用户发送飞书私聊消息。需要先通过 search_user 获取用户的 open_id。', {
+    open_id: z.string().describe('目标用户的 open_id（通过 search_user 获取）'),
+    content: z.string().describe('消息内容（纯文本）'),
+  }, handler),
+
+  tool('create_task', '创建飞书待办任务并指派给用户。需要先通过 search_user 获取用户的 open_id。', {
+    title: z.string().describe('任务标题'),
+    assignee_open_id: z.string().describe('执行者的 open_id'),
+    due_date: z.string().optional().describe('截止日期，ISO 8601 格式，如 2025-01-20'),
+    description: z.string().optional().describe('任务描述'),
+  }, handler),
+
+  tool('create_calendar_event', '创建飞书日程并邀请参与者。需要先通过 search_user 获取参与者的 open_id。', {
+    title: z.string().describe('日程标题'),
+    start_time: z.string().describe('开始时间，ISO 8601 格式，如 2025-01-20T15:00:00+08:00'),
+    end_time: z.string().optional().describe('结束时间（默认开始时间后 1 小时）'),
+    attendee_open_ids: z.array(z.string()).describe('参与者 open_id 列表'),
+    description: z.string().optional().describe('日程描述'),
+    need_meeting: z.boolean().optional().describe('是否创建视频会议，默认 true'),
+  }, handler),
+]
+```
+
+### 工具 handler 模式
+
+每个 handler 直接调用 feishu-api.ts 中的函数，返回 `{ content: [{ type: 'text', text: result.message }] }`。
+对于 search_user，需要将用户列表序列化为可读文本。
+
+---
+
+## Step 3: 在 `src/mcp-server.ts` 中注册 Codex MCP 工具
+
+与 Step 2 对称，在 Codex stdio 服务器中注册同样的 4 个工具。
+区别：Codex 版本使用 `getLarkClient()` 获取客户端，不从闭包传入。
+
+---
+
+## Step 4: 在 `src/formatter.ts` 中添加工具格式化
+
+在 `formatToolEnd()` 中添加对新工具的格式化规则：
+- `search_user`: `🔍 搜索用户「query」`
+- `send_message_to_user`: `💬 发送消息给 open_id`
+- `create_task`: `✅ 创建待办「title」`
+- `create_calendar_event`: `📅 创建日程「title」`
+
+---
+
+## 文件变更清单
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/feishu-api.ts` | **新建** | 4 个飞书 API 封装函数（searchUser、sendMessageToUser、createTask、createCalendarEvent） |
+| `src/tools.ts` | 修改 | 新增 4 个 Claude MCP 工具注册 |
+| `src/mcp-server.ts` | 修改 | 新增 4 个 Codex MCP 工具注册 |
+| `src/formatter.ts` | 修改 | 新工具的格式化规则 |
+
+不需要修改的文件：
+- `feishu.ts` — 无变化，事件流处理已经是通用的
+- `provider.ts` — 无变化，MCP 服务器已通过 createFeishuToolsServer 注入
+- `types.ts` — 无变化，ClaudeEvent 类型已覆盖
+- `config.ts` — 无变化，不需要新增环境变量

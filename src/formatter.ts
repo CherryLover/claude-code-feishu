@@ -10,6 +10,10 @@ const TOOL_ICONS: Record<string, string> = {
   'Task': '🤖 子任务',
   'TodoWrite': '📋 任务列表',
   'Reasoning': '💭 思考',
+  'search_user': '🔍 搜索用户',
+  'send_message_to_user': '💬 发送消息',
+  'create_task': '✅ 创建待办',
+  'create_calendar_event': '📅 创建日程',
 };
 
 export function formatToolStart(toolName: string): string {
@@ -45,6 +49,21 @@ export function formatToolEnd(toolName: string, input: string): string {
     }
     if (toolName === 'Glob' && parsed.pattern) {
       return `📁 \`${parsed.pattern}\``;
+    }
+    // 飞书主动交互工具
+    if (toolName === 'search_user' && parsed.query) {
+      return `🔍 搜索用户「${parsed.query}」`;
+    }
+    if (toolName === 'send_message_to_user') {
+      const preview = parsed.content?.length > 50 ? parsed.content.slice(0, 50) + '...' : parsed.content;
+      return `💬 发送消息给 \`${parsed.open_id}\`\n> ${preview || ''}`;
+    }
+    if (toolName === 'create_task') {
+      return `✅ 创建待办「${parsed.title}」→ \`${parsed.assignee_open_id}\`${parsed.due_date ? ` | 截止: ${parsed.due_date}` : ''}`;
+    }
+    if (toolName === 'create_calendar_event') {
+      const attendeeCount = parsed.attendee_open_ids?.length || 0;
+      return `📅 创建日程「${parsed.title}」| ${parsed.start_time} | ${attendeeCount} 位参与者`;
     }
     // Reasoning（Codex 思考过程）
     if (toolName === 'Reasoning' && parsed.reasoning) {

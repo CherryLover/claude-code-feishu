@@ -7,7 +7,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "check:feishu-perms": "node scripts/check-feishu-permissions.mjs"
   },
   "keywords": [
     "feishu",

@@ -5,6 +5,52 @@ import { formatToolStart, formatToolEnd, formatToolResult, buildFeishuCard } fro
 import { MessageDedup } from './dedup.js';
 import { UsageInfo } from './types.js';
 
+interface LarkErrorLike {
+  message?: string;
+  response?: {
+    status?: number;
+    data?: {
+      code?: number;
+      msg?: string;
+      error?: {
+        log_id?: string;
+      };
+    };
+  };
+}
+
+function formatLarkLog(args: unknown[]): string {
+  return args
+    .map((arg) => {
+      if (typeof arg === 'string') return arg;
+
+      const err = arg as LarkErrorLike;
+      const status = err?.response?.status;
+      const code = err?.response?.data?.code;
+      const msg = err?.response?.data?.msg || err?.message;
+      const logId = err?.response?.data?.error?.log_id;
+
+      if (status || code || msg) {
+        return `${status ? `HTTP ${status} - ` : ''}${msg || '飞书请求失败'}${code !== undefined ? ` (code: ${code})` : ''}${logId ? ` | log_id: ${logId}` : ''}`;
+      }
+
+      try {
+        return JSON.stringify(arg);
+      } catch {
+        return String(arg);
+      }
+    })
+    .join(' | ');
+}
+
+const larkLogger = {
+  error: (...msg: unknown[]) => console.error(`[LarkSDK] ${formatLarkLog(msg)}`),
+  warn: (...msg: unknown[]) => console.warn(`[LarkSDK] ${formatLarkLog(msg)}`),
+  info: (...msg: unknown[]) => console.log(`[LarkSDK] ${formatLarkLog(msg)}`),
+  debug: (...msg: unknown[]) => console.log(`[LarkSDK] ${formatLarkLog(msg)}`),
+  trace: (...msg: unknown[]) => console.log(`[LarkSDK] ${formatLarkLog(msg)}`),
+};
+
 const sessions = new Map<string, string>(); // chatId -> claudeSessionId
 const openIdToChatId = new Map<string, string>(); // openId -> chatId（私聊映射，供菜单事件使用）
 const dedup = new MessageDedup();
@@ -20,18 +66,79 @@ let feishuClient: Lark.Client | null = null;
 // 机器人自身的 open_id，用于群聊中判断是否 @了自己
 let botOpenId: string | null = null;
 
+// WebSocket 定时刷新连接，防止被网络设备静默丢弃
+let wsClientRef: Lark.WSClient | null = null;
+let eventDispatcherRef: Lark.EventDispatcher | null = null;
+const WS_REFRESH_INTERVAL = 30 * 60 * 1000; // 每 30 分钟刷新一次连接
+const senderNameCache = new Map<string, string>(); // openId -> 发送者姓名
+
+async function resolveSenderName(client: Lark.Client, openId?: string): Promise<string | undefined> {
+  if (!openId || openId === 'unknown') return undefined;
+
+  const cachedName = senderNameCache.get(openId);
+  if (cachedName) return cachedName;
+
+  try {
+    const resp = await client.request({
+      method: 'GET',
+      url: `/open-apis/contact/v3/users/${openId}`,
+      params: { user_id_type: 'open_id' },
+    }) as any;
+
+    const name = resp?.data?.user?.name as string | undefined;
+    if (name) {
+      senderNameCache.set(openId, name);
+      return name;
+    }
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.log(`[消息上下文] 获取发送者姓名失败: ${openId} | ${errMsg}`);
+  }
+
+  return undefined;
+}
+
+function startPeriodicRefresh() {
+  setInterval(() => {
+    console.log(`[WS刷新] 定时刷新连接...`);
+    refreshWsClient();
+  }, WS_REFRESH_INTERVAL);
+  console.log(`[WS刷新] 已启动，每 ${WS_REFRESH_INTERVAL / 60000} 分钟刷新一次连接`);
+}
+
+function refreshWsClient() {
+  if (!wsClientRef || !eventDispatcherRef) return;
+  try {
+    wsClientRef.close({ force: true });
+  } catch (e) {
+    console.error('[WS刷新] 关闭旧连接失败:', e);
+  }
+  wsClientRef = new Lark.WSClient({
+    appId: config.feishuAppId,
+    appSecret: config.feishuAppSecret,
+    loggerLevel: Lark.LoggerLevel.error,
+    logger: larkLogger,
+  });
+  wsClientRef.start({ eventDispatcher: eventDispatcherRef });
+  console.log('[WS刷新] 新连接已建立');
+}
+
 export function startFeishuBot() {
   const client = new Lark.Client({
     appId: config.feishuAppId,
     appSecret: config.feishuAppSecret,
+    loggerLevel: Lark.LoggerLevel.error,
+    logger: larkLogger,
   });
   feishuClient = client;
 
   const wsClient = new Lark.WSClient({
     appId: config.feishuAppId,
     appSecret: config.feishuAppSecret,
-    loggerLevel: Lark.LoggerLevel.info,
+    loggerLevel: Lark.LoggerLevel.error,
+    logger: larkLogger,
   });
+  wsClientRef = wsClient;
 
   const eventDispatcher = new Lark.EventDispatcher({}).register({
     'im.message.receive_v1': async (data: any) => {
@@ -126,7 +233,11 @@ export function startFeishuBot() {
     },
   });
 
+  eventDispatcherRef = eventDispatcher;
   wsClient.start({ eventDispatcher });
+
+  // 启动定时刷新连接
+  startPeriodicRefresh();
 
   // 获取机器人自身的 open_id
   client.request({ method: 'GET', url: '/open-apis/bot/v3/info/' }).then((resp: any) => {
@@ -324,6 +435,14 @@ async function handleMessage(client: Lark.Client, data: any) {
   }
 
   // 调用 AI
+  const senderOpenId = data.sender?.sender_id?.open_id;
+  const senderName = await resolveSenderName(client, senderOpenId);
+  if (senderName && senderOpenId) {
+    console.log(`[消息上下文] 当前发送者: ${senderName} (${senderOpenId})`);
+  } else if (senderOpenId) {
+    console.log(`[消息上下文] 当前发送者 open_id: ${senderOpenId}`);
+  }
+
   const providerName = getProviderName();
   console.log(`[${providerName}] 开始处理...`);
   processing.add(chatId);
@@ -347,6 +466,8 @@ async function handleMessage(client: Lark.Client, data: any) {
       abortSignal: abortController.signal,
       feishuClient: client,
       chatId,
+      senderOpenId,
+      senderName,
     });
 
     for await (const event of stream) {
