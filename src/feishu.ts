@@ -624,8 +624,13 @@ async function handleMessage(client: Lark.Client, data: any) {
     });
 
     for await (const event of stream) {
-      // 模型有新回复时刷新超时计时，避免长任务被误判超时
-      if ((event.type === 'text' || event.type === 'result') && event.content?.trim()) {
+      // 模型文本回复、工具事件都算进度，刷新超时计时避免长任务被误判超时
+      const shouldRefreshTimeout = event.type === 'text'
+        || event.type === 'result'
+        || event.type === 'tool_start'
+        || event.type === 'tool_end'
+        || event.type === 'tool_result';
+      if (shouldRefreshTimeout) {
         resetTurnTimeout();
       }
 
