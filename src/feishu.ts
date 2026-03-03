@@ -7,7 +7,7 @@ import { config } from './config.js';
 import { streamChat, getProviderName } from './provider.js';
 import { formatToolStart, formatToolEnd, formatToolResult, buildFeishuCard } from './formatter.js';
 import { MessageDedup } from './dedup.js';
-import { UsageInfo } from './types.js';
+import { InputImage, UsageInfo } from './types.js';
 
 interface LarkErrorLike {
   message?: string;
@@ -118,10 +118,83 @@ const WS_REFRESH_INTERVAL = 30 * 60 * 1000; // 每 30 分钟刷新一次连接
 const senderNameCache = new Map<string, string>(); // openId -> 发送者姓名
 const DEFAULT_CHAT_TURN_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟
 
+interface DownloadedImageInput {
+  filePath: string;
+  mimeType?: string;
+  tempDir: string;
+}
+
 function getChatTurnTimeoutMs(): number {
   const raw = Number(process.env.CHAT_TURN_TIMEOUT_MS || DEFAULT_CHAT_TURN_TIMEOUT_MS);
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_CHAT_TURN_TIMEOUT_MS;
   return Math.max(10_000, Math.floor(raw)); // 最小 10 秒
+}
+
+const IMAGE_EXT_BY_MIME: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+};
+
+function getSingleHeaderValue(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value) && typeof value[0] === 'string') return value[0];
+  return undefined;
+}
+
+function getImageExtension(mimeType?: string): string {
+  if (!mimeType) return '.jpg';
+  return IMAGE_EXT_BY_MIME[mimeType] || '.jpg';
+}
+
+async function downloadImageFromMessage(
+  client: Lark.Client,
+  messageId: string,
+  imageKey: string,
+): Promise<DownloadedImageInput> {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-image-'));
+
+  try {
+    const resource = await client.im.messageResource.get({
+      params: { type: 'image' },
+      path: {
+        message_id: messageId,
+        file_key: imageKey,
+      },
+    });
+
+    const contentTypeHeader = getSingleHeaderValue(resource.headers?.['content-type']);
+    const mimeType = contentTypeHeader?.split(';')[0].trim().toLowerCase();
+    const extension = getImageExtension(mimeType);
+    const filePath = path.join(tempDir, `input${extension}`);
+
+    await resource.writeFile(filePath);
+
+    return {
+      filePath,
+      mimeType,
+      tempDir,
+    };
+  } catch (error) {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+    throw error;
+  }
+}
+
+function cleanupDownloadedImages(images: DownloadedImageInput[]): void {
+  for (const image of images) {
+    try {
+      fs.rmSync(image.tempDir, { recursive: true, force: true });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : '未知错误';
+      console.warn(`[消息输入] 清理图片临时目录失败: ${image.tempDir} | ${errMsg}`);
+    }
+  }
 }
 
 async function resolveSenderName(client: Lark.Client, openId?: string): Promise<string | undefined> {
@@ -225,8 +298,8 @@ export function startFeishuBot() {
           return;
         }
 
-        // 2. 只处理文本和富文本消息
-        if (message.message_type !== 'text' && message.message_type !== 'post') {
+        // 2. 只处理文本、富文本和图片消息
+        if (message.message_type !== 'text' && message.message_type !== 'post' && message.message_type !== 'image') {
           console.log(`[跳过] 非文本消息: ${message.message_type}`);
           logFeishuRuntime('event.skip.message_type', {
             messageId: message.message_id,
@@ -471,8 +544,10 @@ async function handleMessage(client: Lark.Client, data: any) {
     return;
   }
 
-  // 获取消息文本
+  // 获取消息文本 / 图片输入
   let text = '';
+  const inputImages: InputImage[] = [];
+  const downloadedImageInputs: DownloadedImageInput[] = [];
   try {
     const parsed = JSON.parse(message.content);
     if (message.message_type === 'post') {
@@ -490,14 +565,44 @@ async function handleMessage(client: Lark.Client, data: any) {
         }
         text = parts.join('\n').trim();
       }
+    } else if (message.message_type === 'image') {
+      const imageKey = parsed.image_key;
+      if (!imageKey || typeof imageKey !== 'string') {
+        logFeishuRuntime('message.handle.skip.image_key_missing', {
+          messageId: incomingMessageId,
+          chatId,
+          content: message.content,
+        });
+        return;
+      }
+
+      const downloaded = await downloadImageFromMessage(client, incomingMessageId, imageKey);
+      downloadedImageInputs.push(downloaded);
+      inputImages.push({
+        filePath: downloaded.filePath,
+        mimeType: downloaded.mimeType,
+      });
+
+      text = '请分析用户发送的图片内容，并给出简洁结论。';
+      console.log(`[消息输入] 已下载图片: ${downloaded.filePath}`);
     } else {
       text = parsed.text?.trim() || '';
     }
-  } catch {
+  } catch (error: unknown) {
+    if (downloadedImageInputs.length > 0) {
+      cleanupDownloadedImages(downloadedImageInputs);
+    }
+    const errMsg = error instanceof Error ? error.message : '未知错误';
     logFeishuRuntime('message.handle.skip.parse_failed', {
       messageId: incomingMessageId,
       chatId,
+      error: errMsg,
     });
+
+    if (message.message_type === 'image') {
+      await sendCard(client, chatId, 'Claude Code', `❌ 图片读取失败：${errMsg}`);
+    }
+
     return;
   }
 
@@ -512,7 +617,7 @@ async function handleMessage(client: Lark.Client, data: any) {
     }
   }
 
-  if (!text) {
+  if (!text && inputImages.length === 0) {
     logFeishuRuntime('message.handle.skip.empty_text', {
       messageId: incomingMessageId,
       chatId,
@@ -590,6 +695,7 @@ async function handleMessage(client: Lark.Client, data: any) {
     processing.delete(chatId);
     abortControllers.delete(chatId);
     abortReasons.delete(chatId);
+    cleanupDownloadedImages(downloadedImageInputs);
     return;
   }
 
@@ -621,6 +727,7 @@ async function handleMessage(client: Lark.Client, data: any) {
       chatId,
       senderOpenId,
       senderName,
+      inputImages,
     });
 
     for await (const event of stream) {
@@ -740,6 +847,10 @@ async function handleMessage(client: Lark.Client, data: any) {
           console.error('[错误] 处理排队消息失败:', err);
         });
       });
+    }
+
+    if (downloadedImageInputs.length > 0) {
+      cleanupDownloadedImages(downloadedImageInputs);
     }
   }
 }

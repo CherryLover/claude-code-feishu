@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
-import { ClaudeEvent, StreamChatOptions } from './types.js';
+import { ClaudeEvent, InputImage, StreamChatOptions } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -202,6 +202,30 @@ function buildOsErrorHint(errMsg: string, workingDirectory: string): string | nu
   return `${problems.join('；')}。详细诊断见 ${DETAIL_LOG_PATH}`;
 }
 
+type CodexInputItem =
+  | { type: 'text'; text: string }
+  | { type: 'local_image'; path: string };
+
+function buildCodexTurnInput(prompt: string, inputImages?: InputImage[]): string | CodexInputItem[] {
+  const validImages = (inputImages || []).filter((item) => fileExists(item.filePath));
+  if (validImages.length === 0) {
+    return prompt;
+  }
+
+  const items: CodexInputItem[] = [];
+  const normalizedPrompt = prompt.trim();
+  items.push({
+    type: 'text',
+    text: normalizedPrompt || '请结合用户发送的图片内容进行分析并回复。',
+  });
+
+  for (const image of validImages) {
+    items.push({ type: 'local_image', path: image.filePath });
+  }
+
+  return items;
+}
+
 // Codex SDK 是 ESM-only，需要动态 import
 let codexInstance: any = null;
 
@@ -314,6 +338,8 @@ export async function* streamCodexChat(
 
   try {
     workingDirectory = resolveWorkingDirectory();
+    const turnInput = buildCodexTurnInput(prompt, options?.inputImages);
+    const inputImageCount = options?.inputImages?.length || 0;
 
     logDetail('turn.start', {
       sessionId,
@@ -321,6 +347,7 @@ export async function* streamCodexChat(
       promptPreview: prompt.slice(0, 200),
       workingDirectory,
       configuredWorkspace: config.workspace,
+      inputImageCount,
     });
 
     let thread;
@@ -338,7 +365,7 @@ export async function* streamCodexChat(
       });
     }
 
-    const { events } = await thread.runStreamed(prompt, {
+    const { events } = await thread.runStreamed(turnInput, {
       signal: options?.abortSignal,
     });
 

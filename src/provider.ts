@@ -52,6 +52,7 @@ export async function* streamChat(
     yield* streamClaudeChat(contextualPrompt, sessionId, {
       mcpServers,
       abortSignal: options?.abortSignal,
+      inputImages: options?.inputImages,
     });
   }
 }

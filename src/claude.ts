@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from './config.js';
-import { ClaudeEvent } from './types.js';
+import { ClaudeEvent, InputImage } from './types.js';
 
 // 详细日志文件路径
 const LOG_DIR = path.resolve(process.cwd(), 'log');
@@ -37,13 +37,74 @@ function logDetail(eventType: string, data: unknown): void {
 // MCP 服务器类型
 type McpServer = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer>;
 
-// 生成 streaming input 消息（MCP 工具需要此格式）
-async function* generateMessages(prompt: string): AsyncGenerator<any> {
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+
+const SUPPORTED_IMAGE_MIME = new Set(Object.values(IMAGE_MIME_BY_EXT));
+
+function resolveImageMimeType(filePath: string, mimeType?: string): string | null {
+  if (mimeType) {
+    const normalized = mimeType.split(';')[0].trim().toLowerCase();
+    if (SUPPORTED_IMAGE_MIME.has(normalized)) {
+      return normalized;
+    }
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  return IMAGE_MIME_BY_EXT[ext] || null;
+}
+
+async function buildClaudeUserContent(prompt: string, inputImages?: InputImage[]): Promise<any[]> {
+  const content: any[] = [];
+  const normalizedPrompt = prompt.trim();
+  content.push({
+    type: 'text',
+    text: normalizedPrompt || '请结合用户发送的图片内容进行分析并回复。',
+  });
+
+  for (const image of inputImages || []) {
+    if (!fs.existsSync(image.filePath)) {
+      continue;
+    }
+
+    try {
+      const bytes = await fs.promises.readFile(image.filePath);
+      const mimeType = resolveImageMimeType(image.filePath, image.mimeType);
+      if (!mimeType) {
+        logDetail('image.unsupported', { filePath: image.filePath, mimeType: image.mimeType || null });
+        continue;
+      }
+
+      content.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: mimeType,
+          data: bytes.toString('base64'),
+        },
+      });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : '未知错误';
+      logDetail('image.read.error', { filePath: image.filePath, error: errMsg });
+    }
+  }
+
+  return content;
+}
+
+// 生成 streaming input 消息（MCP 工具/图片输入需要此格式）
+async function* generateMessages(prompt: string, inputImages?: InputImage[]): AsyncGenerator<any> {
+  const content = await buildClaudeUserContent(prompt, inputImages);
   yield {
     type: 'user',
     message: {
       role: 'user',
-      content: prompt,
+      content,
     },
   };
 }
@@ -51,6 +112,7 @@ async function* generateMessages(prompt: string): AsyncGenerator<any> {
 export interface StreamClaudeOptions {
   mcpServers?: Record<string, McpServer>;
   abortSignal?: AbortSignal;
+  inputImages?: InputImage[];
 }
 
 export async function* streamClaudeChat(
@@ -79,8 +141,10 @@ export async function* streamClaudeChat(
   let newSessionId: string | null = null;
 
   try {
-    // 使用 MCP 工具时需要 streaming input 模式
-    const promptInput = options?.mcpServers ? generateMessages(prompt) : prompt;
+    const useStreamingInput = Boolean(options?.mcpServers || (options?.inputImages?.length || 0) > 0);
+    const promptInput = useStreamingInput
+      ? generateMessages(prompt, options?.inputImages)
+      : prompt;
 
     for await (const message of query({ prompt: promptInput, options: queryOptions })) {
       // 检查中断信号

@@ -15,12 +15,18 @@ export interface UsageInfo {
   costUSD?: number;
 }
 
+export interface InputImage {
+  filePath: string;
+  mimeType?: string;
+}
+
 export interface StreamChatOptions {
   abortSignal?: AbortSignal;
   feishuClient?: any;
   chatId?: string;
   senderOpenId?: string;
   senderName?: string;
+  inputImages?: InputImage[];
 }
 
 export interface Session {
