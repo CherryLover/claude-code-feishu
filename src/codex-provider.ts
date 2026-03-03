@@ -444,6 +444,7 @@ export async function* streamCodexChat(
             if (text) {
               console.log(`[Codex] 收到回复 (${text.length} 字符)`);
               agentMessages.push(text);
+              yield { type: 'text', content: text };
             }
           }
           break;

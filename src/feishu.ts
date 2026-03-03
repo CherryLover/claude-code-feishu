@@ -116,7 +116,7 @@ let wsClientRef: Lark.WSClient | null = null;
 let eventDispatcherRef: Lark.EventDispatcher | null = null;
 const WS_REFRESH_INTERVAL = 30 * 60 * 1000; // 每 30 分钟刷新一次连接
 const senderNameCache = new Map<string, string>(); // openId -> 发送者姓名
-const DEFAULT_CHAT_TURN_TIMEOUT_MS = 3 * 60 * 1000; // 3 分钟
+const DEFAULT_CHAT_TURN_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟
 
 function getChatTurnTimeoutMs(): number {
   const raw = Number(process.env.CHAT_TURN_TIMEOUT_MS || DEFAULT_CHAT_TURN_TIMEOUT_MS);
@@ -593,17 +593,26 @@ async function handleMessage(client: Lark.Client, data: any) {
     return;
   }
 
-  const timeoutTimer = setTimeout(() => {
-    if (!abortController.signal.aborted) {
-      abortReasons.set(chatId, 'timeout');
-      abortController.abort();
-      logFeishuRuntime('message.handle.timeout.abort', {
-        chatId,
-        messageId: incomingMessageId,
-        timeoutMs: chatTurnTimeoutMs,
-      });
+  let timeoutTimer: NodeJS.Timeout | null = null;
+  const resetTurnTimeout = () => {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
     }
-  }, chatTurnTimeoutMs);
+
+    timeoutTimer = setTimeout(() => {
+      if (!abortController.signal.aborted) {
+        abortReasons.set(chatId, 'timeout');
+        abortController.abort();
+        logFeishuRuntime('message.handle.timeout.abort', {
+          chatId,
+          messageId: incomingMessageId,
+          timeoutMs: chatTurnTimeoutMs,
+        });
+      }
+    }, chatTurnTimeoutMs);
+  };
+
+  resetTurnTimeout();
 
   try {
     const stream = streamChat(text, sessionId, {
@@ -615,6 +624,11 @@ async function handleMessage(client: Lark.Client, data: any) {
     });
 
     for await (const event of stream) {
+      // 模型有新回复时刷新超时计时，避免长任务被误判超时
+      if ((event.type === 'text' || event.type === 'result') && event.content?.trim()) {
+        resetTurnTimeout();
+      }
+
       if (abortController.signal.aborted) {
         const reason = abortReasons.get(chatId);
         if (reason === 'timeout') {
@@ -646,6 +660,8 @@ async function handleMessage(client: Lark.Client, data: any) {
           }
           chunks.push('---');
           await updateCard(client, messageId, providerName, chunks.join('\n') + '\n\n🔄 继续处理...');
+          break;
+        case 'text':
           break;
         case 'result':
           console.log(`[${providerName}] 处理完成`);
@@ -700,7 +716,9 @@ async function handleMessage(client: Lark.Client, data: any) {
     });
     await updateCard(client, messageId, providerName, `❌ 错误: ${finalErrMsg}`);
   } finally {
-    clearTimeout(timeoutTimer);
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+    }
     processing.delete(chatId);
     abortControllers.delete(chatId);
     abortReasons.delete(chatId);
