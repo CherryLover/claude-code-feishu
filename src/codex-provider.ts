@@ -1,23 +1,24 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
 import { config } from './config.js';
 import { ClaudeEvent, StreamChatOptions } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, '..');
 
 // 详细日志文件路径
-const LOG_DIR = path.resolve(process.cwd(), 'log');
+const LOG_DIR = path.join(PROJECT_ROOT, 'log');
 const DETAIL_LOG_PATH = path.join(LOG_DIR, 'codex-detail.log');
+const MCP_SERVER_SECTION = 'mcp_servers.feishu-tools';
 
 // 确保 log 目录存在
 if (!fs.existsSync(LOG_DIR)) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
 }
 
-fs.writeFileSync(DETAIL_LOG_PATH, '');
+console.log(`[Codex] 详细日志路径: ${DETAIL_LOG_PATH}`);
 
 function logDetail(eventType: string, data: unknown): void {
   const now = new Date();
@@ -33,9 +34,172 @@ function logDetail(eventType: string, data: unknown): void {
   }).replace(/\//g, '-');
   const json = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
   const line = `[${timestamp}] [${eventType}] ${json}\n`;
-  fs.appendFile(DETAIL_LOG_PATH, line, (err) => {
-    if (err) console.error('[Codex] 写入详情日志失败:', err.message);
+  try {
+    fs.appendFileSync(DETAIL_LOG_PATH, line);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : '未知错误';
+    console.error(`[Codex] 写入详情日志失败 (${DETAIL_LOG_PATH}):`, errMsg);
+  }
+}
+
+logDetail('service.boot', {
+  pid: process.pid,
+  cwd: process.cwd(),
+  workspace: config.workspace,
+  nodePath: process.execPath,
+});
+
+function fileExists(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function dirExists(dirPath: string): boolean {
+  try {
+    return fs.statSync(dirPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function escapeTomlString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function normalizeSection(section: string | null): string {
+  if (!section) return '';
+  return section
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function extractTomlSection(configText: string, sectionName: string): string | null {
+  const header = `[${sectionName}]`;
+  const lines = configText.split(/\r?\n/);
+  const sectionLines: string[] = [];
+  let inTarget = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isHeader = trimmed.startsWith('[') && trimmed.endsWith(']');
+
+    if (!inTarget) {
+      if (trimmed === header) {
+        inTarget = true;
+        sectionLines.push(line.trimEnd());
+      }
+      continue;
+    }
+
+    if (isHeader) {
+      break;
+    }
+
+    sectionLines.push(line.trimEnd());
+  }
+
+  return sectionLines.length > 0 ? sectionLines.join('\n').trimEnd() : null;
+}
+
+function upsertTomlSection(configText: string, sectionName: string, sectionBody: string): string {
+  const header = `[${sectionName}]`;
+  const lines = configText.split(/\r?\n/);
+  const keptLines: string[] = [];
+  let inTarget = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isHeader = trimmed.startsWith('[') && trimmed.endsWith(']');
+
+    if (!inTarget && trimmed === header) {
+      inTarget = true;
+      continue;
+    }
+
+    if (inTarget && isHeader) {
+      inTarget = false;
+      keptLines.push(line.trimEnd());
+      continue;
+    }
+
+    if (!inTarget) {
+      keptLines.push(line.trimEnd());
+    }
+  }
+
+  const withoutTarget = keptLines.join('\n').trimEnd();
+  return `${withoutTarget ? `${withoutTarget}\n\n` : ''}${sectionBody.trimEnd()}\n`;
+}
+
+function getRuntimePaths() {
+  return {
+    projectRoot: PROJECT_ROOT,
+    mcpServerPath: path.join(PROJECT_ROOT, 'dist', 'mcp-server.js'),
+    codexConfigPath: path.join(process.env.HOME || '/root', '.codex', 'config.toml'),
+    nodePath: process.execPath,
+  };
+}
+
+function resolveWorkingDirectory(): string {
+  const candidates = [
+    config.workspace,
+    process.cwd(),
+    PROJECT_ROOT,
+  ];
+  const uniqueCandidates = [...new Set(candidates.filter(Boolean))];
+  const resolved = uniqueCandidates.find((candidate) => dirExists(candidate));
+
+  logDetail('workspace.resolve', {
+    configuredWorkspace: config.workspace,
+    candidates: uniqueCandidates.map((candidate) => ({
+      path: candidate,
+      exists: dirExists(candidate),
+    })),
+    selected: resolved || null,
   });
+
+  if (!resolved) {
+    throw new Error(`未找到可用工作目录，请检查 WORKSPACE 配置。当前 WORKSPACE=${config.workspace}`);
+  }
+
+  if (resolved !== config.workspace) {
+    console.warn(`[Codex] WORKSPACE 不存在，已回退到: ${resolved}`);
+  }
+
+  return resolved;
+}
+
+function buildOsErrorHint(errMsg: string, workingDirectory: string): string | null {
+  if (!errMsg.includes('No such file or directory (os error 2)')) {
+    return null;
+  }
+
+  const { mcpServerPath, codexConfigPath, nodePath } = getRuntimePaths();
+  const problems: string[] = [];
+
+  if (!dirExists(workingDirectory)) {
+    problems.push(`工作目录不存在: ${workingDirectory}`);
+  }
+  if (!fileExists(nodePath)) {
+    problems.push(`Node 可执行文件不存在: ${nodePath}`);
+  }
+  if (!fileExists(mcpServerPath)) {
+    problems.push(`MCP 入口文件不存在: ${mcpServerPath}`);
+  }
+  if (!fileExists(codexConfigPath)) {
+    problems.push(`Codex 配置文件不存在: ${codexConfigPath}`);
+  }
+
+  if (problems.length === 0) {
+    return `请检查 Codex MCP 配置与 WORKSPACE。详细诊断见 ${DETAIL_LOG_PATH}`;
+  }
+
+  return `${problems.join('；')}。详细诊断见 ${DETAIL_LOG_PATH}`;
 }
 
 // Codex SDK 是 ESM-only，需要动态 import
@@ -49,49 +213,66 @@ let codexInstance: any = null;
  * 注意：需要在配置中设置 cwd 让 MCP 服务器能找到 .env 文件。
  */
 function ensureMcpServerRegistered(): void {
-  // 始终指向编译后的 dist/mcp-server.js，无论当前是 dev(tsx/src) 还是 prod(node/dist) 模式
-  const projectRoot = path.resolve(__dirname, '..');
-  const mcpServerPath = path.join(projectRoot, 'dist', 'mcp-server.js');
-  const codexConfigPath = path.join(process.env.HOME || '/root', '.codex', 'config.toml');
+  const { projectRoot, mcpServerPath, codexConfigPath, nodePath } = getRuntimePaths();
+  const codexConfigDir = path.dirname(codexConfigPath);
 
-  // 读取现有配置
-  let currentConfig = '';
-  if (fs.existsSync(codexConfigPath)) {
-    currentConfig = fs.readFileSync(codexConfigPath, 'utf-8');
-  }
+  logDetail('mcp.ensure.start', {
+    projectRoot,
+    mcpServerPath,
+    mcpServerExists: fileExists(mcpServerPath),
+    codexConfigPath,
+    codexConfigExists: fileExists(codexConfigPath),
+    nodePath,
+    nodeExists: fileExists(nodePath),
+  });
 
-  // 检查是否需要更新（路径或 cwd 不对）
-  const hasCorrectPath = currentConfig.includes(mcpServerPath);
-  const hasCorrectCwd = currentConfig.includes(`cwd = "${projectRoot}"`);
-
-  if (hasCorrectPath && hasCorrectCwd) {
-    console.log(`[Codex] MCP feishu-tools 已注册: ${mcpServerPath}`);
+  if (!fileExists(mcpServerPath)) {
+    const msg = `[Codex] MCP 入口文件不存在，跳过注册: ${mcpServerPath}`;
+    console.error(msg);
+    logDetail('mcp.ensure.skip', { reason: 'mcp_server_missing', mcpServerPath });
     return;
   }
 
-  // 需要更新配置
   try {
-    // 先移除旧配置
-    try { execSync('codex mcp remove feishu-tools', { stdio: 'ignore' }); } catch { /* ignore */ }
+    if (!dirExists(codexConfigDir)) {
+      fs.mkdirSync(codexConfigDir, { recursive: true });
+    }
 
-    // 重新读取配置（移除后）
-    currentConfig = fs.existsSync(codexConfigPath)
-      ? fs.readFileSync(codexConfigPath, 'utf-8')
-      : '';
+    if (!fileExists(codexConfigPath)) {
+      fs.writeFileSync(codexConfigPath, '', 'utf-8');
+    }
 
-    // 手动追加 MCP 服务器配置，包含 cwd 设置
-    const mcpConfig = `
-[mcp_servers.feishu-tools]
-command = "node"
-args = ["${mcpServerPath}"]
-cwd = "${projectRoot}"
-`;
+    const currentConfig = fs.readFileSync(codexConfigPath, 'utf-8');
+    const desiredSection = [
+      `[${MCP_SERVER_SECTION}]`,
+      `command = "${escapeTomlString(nodePath)}"`,
+      `args = ["${escapeTomlString(mcpServerPath)}"]`,
+      `cwd = "${escapeTomlString(projectRoot)}"`,
+    ].join('\n');
 
-    fs.appendFileSync(codexConfigPath, mcpConfig);
+    const currentSection = extractTomlSection(currentConfig, MCP_SERVER_SECTION);
+    if (normalizeSection(currentSection) === normalizeSection(desiredSection)) {
+      console.log(`[Codex] MCP feishu-tools 已注册: ${mcpServerPath}`);
+      logDetail('mcp.ensure.unchanged', { codexConfigPath });
+      return;
+    }
+
+    const nextConfig = upsertTomlSection(currentConfig, MCP_SERVER_SECTION, desiredSection);
+    fs.writeFileSync(codexConfigPath, nextConfig, 'utf-8');
+
     console.log(`[Codex] MCP feishu-tools 注册成功: ${mcpServerPath} (cwd: ${projectRoot})`);
+    logDetail('mcp.ensure.updated', {
+      codexConfigPath,
+      section: desiredSection,
+    });
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : '未知错误';
     console.error(`[Codex] MCP feishu-tools 注册失败: ${errMsg}`);
+    logDetail('mcp.ensure.error', {
+      message: errMsg,
+      stack: err instanceof Error ? err.stack : undefined,
+      codexConfigPath,
+    });
   }
 }
 
@@ -102,6 +283,12 @@ async function getCodex(): Promise<any> {
     if (!process.env.CODEX_API_KEY && process.env.OPENAI_API_KEY) {
       process.env.CODEX_API_KEY = process.env.OPENAI_API_KEY;
     }
+
+    logDetail('codex.init', {
+      hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
+      hasCodexKey: Boolean(process.env.CODEX_API_KEY),
+      baseUrl: process.env.OPENAI_BASE_URL || null,
+    });
 
     // 注册 MCP 服务器到 Codex 全局配置
     ensureMcpServerRegistered();
@@ -123,24 +310,37 @@ export async function* streamCodexChat(
   options?: StreamChatOptions,
 ): AsyncGenerator<ClaudeEvent> {
   const codex = await getCodex();
+  let workingDirectory = config.workspace;
 
   try {
+    workingDirectory = resolveWorkingDirectory();
+
+    logDetail('turn.start', {
+      sessionId,
+      promptLength: prompt.length,
+      promptPreview: prompt.slice(0, 200),
+      workingDirectory,
+      configuredWorkspace: config.workspace,
+    });
+
     let thread;
     if (sessionId) {
       console.log(`[Codex] 恢复线程: ${sessionId}`);
       thread = codex.resumeThread(sessionId, {
-        workingDirectory: config.workspace,
+        workingDirectory,
         skipGitRepoCheck: true,
       });
     } else {
       console.log(`[Codex] 创建新线程`);
       thread = codex.startThread({
-        workingDirectory: config.workspace,
+        workingDirectory,
         skipGitRepoCheck: true,
       });
     }
 
-    const { events } = await thread.runStreamed(prompt);
+    const { events } = await thread.runStreamed(prompt, {
+      signal: options?.abortSignal,
+    });
 
     let threadId: string | null = null;
     const agentMessages: string[] = [];
@@ -269,6 +469,12 @@ export async function* streamCodexChat(
         case 'turn.failed': {
           const errMsg = evt.error?.message || evt.message || '处理失败';
           console.log(`[Codex] 处理失败: ${errMsg}`);
+          logDetail('turn.failed', {
+            message: errMsg,
+            event: evt,
+            sessionId,
+            workingDirectory,
+          });
           yield { type: 'error', content: errMsg };
           break;
         }
@@ -276,6 +482,12 @@ export async function* streamCodexChat(
         case 'error': {
           const errMsg = evt.message || evt.error?.message || '未知错误';
           console.log(`[Codex] 错误: ${errMsg}`);
+          logDetail('turn.error', {
+            message: errMsg,
+            event: evt,
+            sessionId,
+            workingDirectory,
+          });
           yield { type: 'error', content: errMsg };
           break;
         }
@@ -283,6 +495,29 @@ export async function* streamCodexChat(
     }
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
-    yield { type: 'error', content: errMsg };
+    const { projectRoot, mcpServerPath, codexConfigPath, nodePath } = getRuntimePaths();
+
+    logDetail('turn.exception', {
+      message: errMsg,
+      stack: error instanceof Error ? error.stack : undefined,
+      sessionId,
+      configuredWorkspace: config.workspace,
+      resolvedWorkingDirectory: workingDirectory,
+      workingDirectoryExists: dirExists(workingDirectory),
+      processCwd: process.cwd(),
+      projectRoot,
+      mcpServerPath,
+      mcpServerExists: fileExists(mcpServerPath),
+      codexConfigPath,
+      codexConfigExists: fileExists(codexConfigPath),
+      mcpSection: fileExists(codexConfigPath)
+        ? extractTomlSection(fs.readFileSync(codexConfigPath, 'utf-8'), MCP_SERVER_SECTION)
+        : null,
+      nodePath,
+      nodeExists: fileExists(nodePath),
+    });
+
+    const hint = buildOsErrorHint(errMsg, workingDirectory);
+    yield { type: 'error', content: hint ? `${errMsg}\n${hint}` : errMsg };
   }
 }

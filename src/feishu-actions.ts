@@ -20,18 +20,27 @@ export interface ActionResult {
  * 发送文件到飞书聊天
  *
  * @param client 飞书客户端实例
- * @param chatId 目标聊天 ID
+ * @param receiveId 目标接收方 ID（chat_id 或 open_id）
  * @param filePath 文件绝对路径
  * @param description 可选的说明文字
  * @param logPrefix 日志前缀，用于区分调用来源
+ * @param receiveIdType 接收方 ID 类型
  */
 export async function sendFileToFeishu(
   client: Lark.Client,
-  chatId: string,
+  receiveId: string,
   filePath: string,
   description?: string,
-  logPrefix = '[飞书]'
+  logPrefix = '[飞书]',
+  receiveIdType: 'chat_id' | 'open_id' = 'chat_id',
 ): Promise<ActionResult> {
+  if (!receiveId) {
+    return {
+      success: false,
+      message: '错误：缺少接收方 ID（chat_id 或 open_id）',
+    };
+  }
+
   // 检查文件是否存在
   if (!fs.existsSync(filePath)) {
     return {
@@ -80,9 +89,9 @@ export async function sendFileToFeishu(
 
       // 发送图片消息
       await client.im.message.create({
-        params: { receive_id_type: 'chat_id' },
+        params: { receive_id_type: receiveIdType },
         data: {
-          receive_id: chatId,
+          receive_id: receiveId,
           msg_type: 'image',
           content: JSON.stringify({ image_key: imageKey }),
         },
@@ -113,9 +122,9 @@ export async function sendFileToFeishu(
 
       // 发送音频消息
       await client.im.message.create({
-        params: { receive_id_type: 'chat_id' },
+        params: { receive_id_type: receiveIdType },
         data: {
-          receive_id: chatId,
+          receive_id: receiveId,
           msg_type: 'audio',
           content: JSON.stringify({ file_key: fileKey }),
         },
@@ -147,9 +156,9 @@ export async function sendFileToFeishu(
 
       // 发送文件消息
       await client.im.message.create({
-        params: { receive_id_type: 'chat_id' },
+        params: { receive_id_type: receiveIdType },
         data: {
-          receive_id: chatId,
+          receive_id: receiveId,
           msg_type: 'file',
           content: JSON.stringify({ file_key: fileKey }),
         },

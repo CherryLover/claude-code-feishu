@@ -6,7 +6,8 @@ function buildPromptWithSystemContext(prompt: string, options?: StreamChatOption
 
   if (options?.chatId) {
     lines.push(`[系统信息] 当前飞书聊天ID: ${options.chatId}`);
-    lines.push('当用户要求发送文件时，请使用 send_file_to_user 工具，chat_id 参数传入上述聊天ID。');
+    lines.push('当用户要求发送文件到当前会话时，请使用 send_file_to_user 工具，chat_id 参数传入上述聊天ID。');
+    lines.push('当用户要求发送给指定用户时，可使用 send_file_to_user 的 open_id 参数。');
   }
 
   if (options?.senderOpenId || options?.senderName) {

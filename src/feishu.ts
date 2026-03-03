@@ -1,4 +1,8 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { streamChat, getProviderName } from './provider.js';
 import { formatToolStart, formatToolEnd, formatToolResult, buildFeishuCard } from './formatter.js';
@@ -51,13 +55,54 @@ const larkLogger = {
   trace: (...msg: unknown[]) => console.log(`[LarkSDK] ${formatLarkLog(msg)}`),
 };
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+const LOG_DIR = path.join(PROJECT_ROOT, 'log');
+const FEISHU_RUNTIME_LOG_PATH = path.join(LOG_DIR, 'feishu-runtime.log');
+const INSTANCE_TAG = process.env.INSTANCE_TAG || `${os.hostname()}:${process.pid}`;
+
+if (!fs.existsSync(LOG_DIR)) {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
+function logFeishuRuntime(eventType: string, data: unknown): void {
+  const now = new Date();
+  const timestamp = now.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).replace(/\//g, '-');
+
+  const payload = typeof data === 'string' ? data : JSON.stringify(data);
+  const line = `[${timestamp}] [${eventType}] ${payload}\n`;
+
+  try {
+    fs.appendFileSync(FEISHU_RUNTIME_LOG_PATH, line);
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.error(`[飞书运行日志] 写入失败 (${FEISHU_RUNTIME_LOG_PATH}): ${errMsg}`);
+  }
+}
+
 const sessions = new Map<string, string>(); // chatId -> claudeSessionId
 const openIdToChatId = new Map<string, string>(); // openId -> chatId（私聊映射，供菜单事件使用）
 const dedup = new MessageDedup();
 // 跟踪正在处理中的聊天，避免并发
 const processing = new Set<string>();
+// 每个聊天保留一条待处理消息（只保留最新）
+const pendingMessages = new Map<string, any>(); // chatId -> eventData
+// 每个聊天保留一张「等待中」卡片，轮到处理时复用该卡片
+const queuedCardMessageIds = new Map<string, string>(); // chatId -> messageId
 // 跟踪每个聊天的中断控制器，用于 stop 命令
 const abortControllers = new Map<string, AbortController>();
+// 记录中断原因（用户停止 / 超时）
+const abortReasons = new Map<string, 'user' | 'timeout'>(); // chatId -> reason
 // 存储卡片消息对应的原始文本（用于「复制原文」按钮回调）
 const cardRawContent = new Map<string, string>(); // messageId -> rawContent
 
@@ -71,6 +116,13 @@ let wsClientRef: Lark.WSClient | null = null;
 let eventDispatcherRef: Lark.EventDispatcher | null = null;
 const WS_REFRESH_INTERVAL = 30 * 60 * 1000; // 每 30 分钟刷新一次连接
 const senderNameCache = new Map<string, string>(); // openId -> 发送者姓名
+const DEFAULT_CHAT_TURN_TIMEOUT_MS = 3 * 60 * 1000; // 3 分钟
+
+function getChatTurnTimeoutMs(): number {
+  const raw = Number(process.env.CHAT_TURN_TIMEOUT_MS || DEFAULT_CHAT_TURN_TIMEOUT_MS);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_CHAT_TURN_TIMEOUT_MS;
+  return Math.max(10_000, Math.floor(raw)); // 最小 10 秒
+}
 
 async function resolveSenderName(client: Lark.Client, openId?: string): Promise<string | undefined> {
   if (!openId || openId === 'unknown') return undefined;
@@ -124,6 +176,18 @@ function refreshWsClient() {
 }
 
 export function startFeishuBot() {
+  console.log(`[飞书运行日志] 路径: ${FEISHU_RUNTIME_LOG_PATH}`);
+  console.log(`[实例] ${INSTANCE_TAG}`);
+  logFeishuRuntime('service.boot', {
+    instance: INSTANCE_TAG,
+    pid: process.pid,
+    cwd: process.cwd(),
+    aiProvider: config.aiProvider,
+    workspace: config.workspace,
+    chatTurnTimeoutMs: getChatTurnTimeoutMs(),
+    feishuAppIdSuffix: config.feishuAppId ? config.feishuAppId.slice(-6) : '',
+  });
+
   const client = new Lark.Client({
     appId: config.feishuAppId,
     appSecret: config.feishuAppSecret,
@@ -145,15 +209,29 @@ export function startFeishuBot() {
         const message = data.message;
         if (!message) return;
 
+        logFeishuRuntime('event.receive', {
+          instance: INSTANCE_TAG,
+          messageId: message.message_id,
+          chatId: message.chat_id,
+          chatType: message.chat_type,
+          messageType: message.message_type,
+          senderOpenId: data.sender?.sender_id?.open_id || 'unknown',
+        });
+
         // 1. 消息去重
         if (dedup.isDuplicate(message.message_id)) {
           console.log(`[跳过] 重复消息: ${message.message_id}`);
+          logFeishuRuntime('event.skip.duplicate', { messageId: message.message_id });
           return;
         }
 
         // 2. 只处理文本和富文本消息
         if (message.message_type !== 'text' && message.message_type !== 'post') {
           console.log(`[跳过] 非文本消息: ${message.message_type}`);
+          logFeishuRuntime('event.skip.message_type', {
+            messageId: message.message_id,
+            messageType: message.message_type,
+          });
           return;
         }
 
@@ -165,6 +243,10 @@ export function startFeishuBot() {
             ? mentions?.some((m: any) => m.id?.open_id === botOpenId)
             : mentions && mentions.length > 0; // fallback: 未获取到 botOpenId 时保持原逻辑
           if (!isMentioned) {
+            logFeishuRuntime('event.skip.group_not_mentioned', {
+              messageId: message.message_id,
+              chatId: message.chat_id,
+            });
             return;
           }
         }
@@ -297,6 +379,7 @@ async function handleMenuEvent(client: Lark.Client, eventKey: string, openId: st
     case 'stop': {
       console.log(`[菜单] 停止处理`);
       if (chatId && abortControllers.has(chatId)) {
+        abortReasons.set(chatId, 'user');
         abortControllers.get(chatId)!.abort();
         await sendCardToUser(client, openId, chatId, 'Claude Code', '⏹️ 已停止当前处理');
       } else {
@@ -354,11 +437,37 @@ async function sendCardToUser(
 async function handleMessage(client: Lark.Client, data: any) {
   const message = data.message;
   const chatId = message.chat_id;
+  const incomingMessageId = message.message_id;
+
+  logFeishuRuntime('message.handle.start', {
+    instance: INSTANCE_TAG,
+    messageId: incomingMessageId,
+    chatId,
+    aiProvider: config.aiProvider,
+  });
 
   // 防止同一个聊天并发处理
   if (processing.has(chatId)) {
     console.log(`[跳过] 聊天 ${chatId} 正在处理中`);
-    await sendCard(client, chatId, 'Claude Code', '⏳ 上一条消息还在处理中，请稍候...');
+    pendingMessages.set(chatId, data);
+    const waitContent = '⏳ 上一条消息还在处理中，请稍候...\n\n✅ 已收到你的最新消息，会在当前任务完成后自动处理。';
+    const queuedCardMessageId = queuedCardMessageIds.get(chatId);
+
+    if (queuedCardMessageId) {
+      await updateCard(client, queuedCardMessageId, 'Claude Code', waitContent);
+    } else {
+      const waitCardMessageId = await sendCard(client, chatId, 'Claude Code', waitContent);
+      if (waitCardMessageId) {
+        queuedCardMessageIds.set(chatId, waitCardMessageId);
+      }
+    }
+
+    logFeishuRuntime('message.handle.skip.processing', {
+      messageId: incomingMessageId,
+      chatId,
+      queued: true,
+      queuedCardMessageId: queuedCardMessageId || null,
+    });
     return;
   }
 
@@ -385,6 +494,10 @@ async function handleMessage(client: Lark.Client, data: any) {
       text = parsed.text?.trim() || '';
     }
   } catch {
+    logFeishuRuntime('message.handle.skip.parse_failed', {
+      messageId: incomingMessageId,
+      chatId,
+    });
     return;
   }
 
@@ -399,7 +512,13 @@ async function handleMessage(client: Lark.Client, data: any) {
     }
   }
 
-  if (!text) return;
+  if (!text) {
+    logFeishuRuntime('message.handle.skip.empty_text', {
+      messageId: incomingMessageId,
+      chatId,
+    });
+    return;
+  }
 
   console.log(`[消息内容] "${text}"`);
 
@@ -414,6 +533,7 @@ async function handleMessage(client: Lark.Client, data: any) {
   if (text === '/stop') {
     console.log(`[命令] 停止处理`);
     if (abortControllers.has(chatId)) {
+      abortReasons.set(chatId, 'user');
       abortControllers.get(chatId)!.abort();
       await sendCard(client, chatId, 'Claude Code', '⏹️ 已停止当前处理');
     } else {
@@ -448,18 +568,42 @@ async function handleMessage(client: Lark.Client, data: any) {
   processing.add(chatId);
   const abortController = new AbortController();
   abortControllers.set(chatId, abortController);
+  abortReasons.delete(chatId);
   const sessionId = sessions.get(chatId) || null;
   const chunks: string[] = [];
   let resultContent = ''; // AI 回复的纯文本，用于复制按钮
   let usageInfo: UsageInfo | undefined;
+  const chatTurnTimeoutMs = getChatTurnTimeoutMs();
+  const chatTurnTimeoutSec = Math.ceil(chatTurnTimeoutMs / 1000);
 
-  // 先发送一条"处理中"的消息，获取 message_id
-  const messageId = await sendCard(client, chatId, providerName, '🔄 处理中...');
+  // 优先复用「等待中」卡片，避免同一条用户消息出现两张卡片
+  let messageId = queuedCardMessageIds.get(chatId) || null;
+  if (messageId) {
+    queuedCardMessageIds.delete(chatId);
+    await updateCard(client, messageId, providerName, '🔄 处理中...');
+  } else {
+    // 先发送一条"处理中"的消息，获取 message_id
+    messageId = await sendCard(client, chatId, providerName, '🔄 处理中...');
+  }
+
   if (!messageId) {
     processing.delete(chatId);
     abortControllers.delete(chatId);
+    abortReasons.delete(chatId);
     return;
   }
+
+  const timeoutTimer = setTimeout(() => {
+    if (!abortController.signal.aborted) {
+      abortReasons.set(chatId, 'timeout');
+      abortController.abort();
+      logFeishuRuntime('message.handle.timeout.abort', {
+        chatId,
+        messageId: incomingMessageId,
+        timeoutMs: chatTurnTimeoutMs,
+      });
+    }
+  }, chatTurnTimeoutMs);
 
   try {
     const stream = streamChat(text, sessionId, {
@@ -472,8 +616,14 @@ async function handleMessage(client: Lark.Client, data: any) {
 
     for await (const event of stream) {
       if (abortController.signal.aborted) {
-        console.log(`[${providerName}] 用户中断处理`);
-        chunks.push('\n⏹️ **已被用户停止**');
+        const reason = abortReasons.get(chatId);
+        if (reason === 'timeout') {
+          console.log(`[${providerName}] 超时中断处理`);
+          chunks.push(`\n⏱️ **执行超时（>${chatTurnTimeoutSec}s），已自动停止**`);
+        } else {
+          console.log(`[${providerName}] 用户中断处理`);
+          chunks.push('\n⏹️ **已被用户停止**');
+        }
         break;
       }
 
@@ -526,13 +676,48 @@ async function handleMessage(client: Lark.Client, data: any) {
     if (resultContent) {
       cardRawContent.set(messageId, resultContent);
     }
+    logFeishuRuntime('message.handle.done', {
+      instance: INSTANCE_TAG,
+      messageId: incomingMessageId,
+      chatId,
+      responseMessageId: messageId,
+      hasResult: Boolean(resultContent),
+      chunkCount: chunks.length,
+    });
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
+    const abortReason = abortReasons.get(chatId);
+    const timeoutErrMsg = `执行超时（>${chatTurnTimeoutSec}s），已自动停止。你可以直接重试，或发送 /status 查看当前状态。`;
+    const finalErrMsg = abortReason === 'timeout' ? timeoutErrMsg : errMsg;
     console.error(`[错误] Claude 处理失败: ${errMsg}`);
-    await updateCard(client, messageId, providerName, `❌ 错误: ${errMsg}`);
+    logFeishuRuntime('message.handle.error', {
+      instance: INSTANCE_TAG,
+      messageId: incomingMessageId,
+      chatId,
+      error: finalErrMsg,
+      rawError: errMsg,
+      abortReason: abortReason || null,
+    });
+    await updateCard(client, messageId, providerName, `❌ 错误: ${finalErrMsg}`);
   } finally {
+    clearTimeout(timeoutTimer);
     processing.delete(chatId);
     abortControllers.delete(chatId);
+    abortReasons.delete(chatId);
+
+    const pending = pendingMessages.get(chatId);
+    if (pending) {
+      pendingMessages.delete(chatId);
+      logFeishuRuntime('message.handle.dequeue', {
+        chatId,
+        messageId: pending?.message?.message_id,
+      });
+      setImmediate(() => {
+        handleMessage(client, pending).catch((err) => {
+          console.error('[错误] 处理排队消息失败:', err);
+        });
+      });
+    }
   }
 }
 

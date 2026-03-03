@@ -23,18 +23,32 @@ export function createFeishuToolsServer(client: Lark.Client, chatId: string) {
     tools: [
       tool(
         'send_file_to_user',
-        '发送本地文件给用户。支持图片（PNG/JPG/GIF等）、文档（PDF/DOC/XLS/PPT等）、音频（MP3/WAV等）。当用户请求查看文件、要求发送文件、或者生成了需要展示的文件时，使用此工具发送给用户。',
+        '发送本地文件给用户。支持图片（PNG/JPG/GIF等）、文档（PDF/DOC/XLS/PPT等）、音频（MP3/WAV等）。默认发送到当前聊天；如果需要发送给指定用户，可传 open_id。',
         {
           file_path: z.string().describe('文件的绝对路径'),
+          chat_id: z.string().optional().describe('目标飞书聊天 ID（可选，默认当前聊天）'),
+          open_id: z.string().optional().describe('目标用户 open_id（可选，传入时优先按私聊发送）'),
           message: z.string().optional().describe('附带的说明文字（可选）'),
         },
         async (args) => {
+          const targetOpenId = args.open_id?.trim();
+          const targetChatId = args.chat_id?.trim() || chatId;
+          const receiveIdType: 'chat_id' | 'open_id' = targetOpenId ? 'open_id' : 'chat_id';
+          const receiveId = targetOpenId || targetChatId;
+
+          if (!receiveId) {
+            return {
+              content: [{ type: 'text', text: '错误：缺少接收方参数，请提供 open_id 或 chat_id。' }],
+            };
+          }
+
           const result = await sendFileToFeishu(
             client,
-            chatId,
+            receiveId,
             args.file_path,
             args.message,
-            '[Claude工具]'
+            '[Claude工具]',
+            receiveIdType,
           );
 
           return {

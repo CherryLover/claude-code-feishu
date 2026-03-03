@@ -11,6 +11,7 @@ const TOOL_ICONS: Record<string, string> = {
   'TodoWrite': '📋 任务列表',
   'Reasoning': '💭 思考',
   'search_user': '🔍 搜索用户',
+  'send_file_to_user': '📎 发送文件',
   'send_message_to_user': '💬 发送消息',
   'create_task': '✅ 创建待办',
   'create_calendar_event': '📅 创建日程',
@@ -57,6 +58,13 @@ export function formatToolEnd(toolName: string, input: string): string {
     if (toolName === 'send_message_to_user') {
       const preview = parsed.content?.length > 50 ? parsed.content.slice(0, 50) + '...' : parsed.content;
       return `💬 发送消息给 \`${parsed.open_id}\`\n> ${preview || ''}`;
+    }
+    if (toolName === 'send_file_to_user') {
+      const target = parsed.open_id
+        ? `open_id:${parsed.open_id}`
+        : (parsed.chat_id ? `chat_id:${parsed.chat_id}` : '当前聊天');
+      const note = parsed.message ? `\n> ${parsed.message}` : '';
+      return `📎 发送文件 \`${parsed.file_path}\` → \`${target}\`${note}`;
     }
     if (toolName === 'create_task') {
       return `✅ 创建待办「${parsed.title}」→ \`${parsed.assignee_open_id}\`${parsed.due_date ? ` | 截止: ${parsed.due_date}` : ''}`;
