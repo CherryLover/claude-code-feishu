@@ -1,6 +1,22 @@
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
 
+export type FeishuOutputMode = 'card' | 'reply';
+
+function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
+  if (!value) return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on', 'y'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off', 'n'].includes(normalized)) return false;
+  return defaultValue;
+}
+
+function parseFeishuOutputMode(value: string | undefined): FeishuOutputMode {
+  if (!value) return 'reply';
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'card' ? 'card' : 'reply';
+}
+
 export const config = {
   // AI Provider: 'claude' | 'codex'
   aiProvider: (process.env.AI_PROVIDER || 'claude') as 'claude' | 'codex',
@@ -14,6 +30,20 @@ export const config = {
 
   // 启动通知（可选，填 open_id 或 chat_id）
   notifyUserId: process.env.NOTIFY_USER_ID || '',
+
+  // 飞书输出模式：card（单卡片更新）| reply（按消息回复）
+  feishuOutputMode: parseFeishuOutputMode(process.env.FEISHU_OUTPUT_MODE),
+
+  // reply 模式展示控制
+  feishuReplyShowToolCalls: parseBoolean(process.env.FEISHU_REPLY_SHOW_TOOL_CALLS, true),
+  feishuReplyShowToolInput: parseBoolean(process.env.FEISHU_REPLY_SHOW_TOOL_INPUT, true),
+  feishuReplyShowToolResult: parseBoolean(process.env.FEISHU_REPLY_SHOW_TOOL_RESULT, true),
+  feishuReplyShowUsage: parseBoolean(process.env.FEISHU_REPLY_SHOW_USAGE, true),
+  feishuReplyShowQueueNotice: parseBoolean(process.env.FEISHU_REPLY_SHOW_QUEUE_NOTICE, true),
+
+  // reply 模式接收确认（给用户消息添加 reaction）
+  feishuReplyAckReaction: parseBoolean(process.env.FEISHU_REPLY_ACK_REACTION, true),
+  feishuReplyAckEmoji: process.env.FEISHU_REPLY_ACK_EMOJI || 'OK',
 
   // 工作目录
   workspace: process.env.WORKSPACE || '/workspace',

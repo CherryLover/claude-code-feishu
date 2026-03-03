@@ -1,6 +1,6 @@
 # Claude Code Feishu Bot
 
-通过飞书机器人与 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 或 [Codex](https://github.com/openai/codex) 交互。基于飞书 WebSocket 长连接接收消息，调用 AI SDK 处理请求，将中间过程和最终结果以 Markdown 卡片实时展示。
+通过飞书机器人与 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 或 [Codex](https://github.com/openai/codex) 交互。基于飞书 WebSocket 长连接接收消息，调用 AI SDK 处理请求，将中间过程和最终结果以「卡片更新」或「逐条回复」两种模式展示。
 
 ## 预览
 
@@ -9,12 +9,13 @@
 ## 功能特性
 
 - **双 AI Provider** — 支持 Claude Agent SDK 和 OpenAI Codex SDK，可独立部署或同时运行
-- **工具调用** — 完整支持 Bash、文件读写、搜索等工具，流式输出实时更新卡片
+- **工具调用** — 完整支持 Bash、文件读写、搜索等工具，可按开关展示调用/输入/结果
 - **会话管理** — 按聊天维度维护独立会话上下文，支持清除和中断
 - **群聊 & 私聊** — 群聊中 @机器人 触发，私聊直接对话
 - **富文本支持** — 支持飞书纯文本和富文本（Post）消息类型
 - **文件发送** — AI 可直接通过飞书发送文件给用户（图片、文档、音频等）
-- **卡片交互** — 支持「复制原文」按钮，卡片底部显示 Token 用量和费用
+- **双输出模式** — 支持 `card`（单卡片实时更新）与 `reply`（针对用户消息逐条回复）
+- **消息回执** — reply 模式可给用户原消息添加 reaction，表示已收到并开始处理
 - **并发控制** — 同一聊天同时只处理一条消息，避免混乱
 - **消息去重** — 5 分钟 TTL，防止超时重推导致重复处理
 - **多实例部署** — Docker Compose 支持多个机器人实例，各自独立配置
@@ -83,6 +84,14 @@ npm run dev
 | `FEISHU_APP_SECRET` | 是 | 飞书应用密钥 |
 | `WORKSPACE` | 否 | AI 工作目录，默认 `/workspace` |
 | `NOTIFY_USER_ID` | 否 | 启动时通知的用户 ID（open_id 或 chat_id） |
+| `FEISHU_OUTPUT_MODE` | 否 | 输出模式：`reply`（默认）或 `card` |
+| `FEISHU_REPLY_SHOW_TOOL_CALLS` | 否 | reply 模式是否展示工具调用 |
+| `FEISHU_REPLY_SHOW_TOOL_INPUT` | 否 | reply 模式是否展示工具输入 |
+| `FEISHU_REPLY_SHOW_TOOL_RESULT` | 否 | reply 模式是否展示工具结果 |
+| `FEISHU_REPLY_SHOW_USAGE` | 否 | reply 模式是否展示 Token/费用 |
+| `FEISHU_REPLY_SHOW_QUEUE_NOTICE` | 否 | reply 模式排队时是否提示 |
+| `FEISHU_REPLY_ACK_REACTION` | 否 | reply 模式收到消息后是否添加 reaction |
+| `FEISHU_REPLY_ACK_EMOJI` | 否 | reply 模式 reaction 的 emoji 类型，默认 `OK` |
 
 ## Docker 部署
 
@@ -131,13 +140,20 @@ docker compose up -d
 
 这些命令同时支持飞书自定义菜单触发。
 
-### 卡片展示
+### 消息展示模式
 
-处理过程中，机器人会实时更新飞书卡片，展示：
+通过 `FEISHU_OUTPUT_MODE` 配置展示方式：
 
-- 工具调用过程（命令执行、文件操作、搜索等）
-- 最终回复内容（Markdown 格式）
-- Token 用量、费用和剩余上下文比例
+- `reply`（默认）：机器人会始终回复到用户原消息下，形成普通聊天记录
+- `card`：机器人使用单张卡片持续更新过程和最终结果
+
+reply 模式可通过环境变量控制细节级别：
+
+- `FEISHU_REPLY_SHOW_TOOL_CALLS`：是否展示工具调用
+- `FEISHU_REPLY_SHOW_TOOL_INPUT`：是否展示工具输入
+- `FEISHU_REPLY_SHOW_TOOL_RESULT`：是否展示工具结果
+- `FEISHU_REPLY_SHOW_USAGE`：是否展示 Token/费用信息
+- `FEISHU_REPLY_ACK_REACTION`：是否给用户消息添加 reaction 回执
 
 ## 项目结构
 
@@ -163,7 +179,7 @@ src/
                                         ↓
                              Provider 路由 (Claude / Codex)
                                         ↓
-                             格式化 Markdown → 飞书卡片 (实时更新)
+                             格式化输出 → 飞书卡片或回复消息
 ```
 
 关键设计：
