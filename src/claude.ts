@@ -46,6 +46,7 @@ const IMAGE_MIME_BY_EXT: Record<string, string> = {
 };
 
 const SUPPORTED_IMAGE_MIME = new Set(Object.values(IMAGE_MIME_BY_EXT));
+const MAX_TOOL_OUTPUT_LENGTH = 2000;
 
 function resolveImageMimeType(filePath: string, mimeType?: string): string | null {
   if (mimeType) {
@@ -109,6 +110,72 @@ async function* generateMessages(prompt: string, inputImages?: InputImage[]): As
   };
 }
 
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function extractToolResultOutput(value: unknown): string {
+  if (value == null) return '';
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    const lines = value
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && 'type' in item && (item as any).type === 'text' && typeof (item as any).text === 'string') {
+          return (item as any).text;
+        }
+        return safeJsonStringify(item);
+      })
+      .filter(Boolean);
+    return lines.join('\n').trim();
+  }
+
+  if (typeof value === 'object') {
+    const data = value as any;
+
+    if (typeof data.content === 'string') {
+      return data.content;
+    }
+
+    if (Array.isArray(data.content)) {
+      const contentText = extractToolResultOutput(data.content);
+      if (contentText) return contentText;
+    }
+
+    const stdout = typeof data.stdout === 'string' ? data.stdout : '';
+    const stderr = typeof data.stderr === 'string' ? data.stderr : '';
+    if (stdout || stderr) {
+      const parts: string[] = [];
+      if (stdout) parts.push(stdout);
+      if (stderr) parts.push(`[stderr]\n${stderr}`);
+      if (data.interrupted) parts.push('[interrupted]');
+      return parts.join('\n\n').trim();
+    }
+
+    if (data.file?.filePath) {
+      const file = data.file;
+      const lineCount = file.numLines || file.totalLines || '?';
+      return `📄 ${file.filePath} (${lineCount} 行)`;
+    }
+  }
+
+  return safeJsonStringify(value);
+}
+
+function truncateToolOutput(output: string): string {
+  if (!output) return '';
+  if (output.length <= MAX_TOOL_OUTPUT_LENGTH) return output;
+  return `${output.slice(0, MAX_TOOL_OUTPUT_LENGTH)}\n... (输出已截断)`;
+}
+
 export interface StreamClaudeOptions {
   mcpServers?: Record<string, McpServer>;
   abortSignal?: AbortSignal;
@@ -137,8 +204,12 @@ export async function* streamClaudeChat(
   }
 
   let currentTool: string | null = null;
+  let currentToolId: string | null = null;
   let toolInput = '';
   let newSessionId: string | null = null;
+  const emittedToolUseIds = new Set<string>();
+  const emittedToolResultIds = new Set<string>();
+  let sawStreamToolLifecycle = false;
 
   try {
     const useStreamingInput = Boolean(options?.mcpServers || (options?.inputImages?.length || 0) > 0);
@@ -170,6 +241,11 @@ export async function* streamClaudeChat(
         // 工具调用开始
         if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
           currentTool = event.content_block.name;
+          currentToolId = typeof event.content_block.id === 'string' ? event.content_block.id : null;
+          if (currentToolId) {
+            emittedToolUseIds.add(currentToolId);
+          }
+          sawStreamToolLifecycle = true;
           toolInput = '';
           yield { type: 'tool_start', toolName: currentTool! };
         }
@@ -188,19 +264,81 @@ export async function* streamClaudeChat(
         if (event.type === 'content_block_stop' && currentTool) {
           yield { type: 'tool_end', toolName: currentTool, toolInput };
           currentTool = null;
+          currentToolId = null;
           toolInput = '';
         }
       }
 
-      // 完整助手消息 - 解析工具执行结果
+      // 完整 assistant 消息（某些 SDK 版本不会返回 stream_event，这里做兼容）
       if (message.type === 'assistant') {
         const content = (message as any).message?.content;
         if (Array.isArray(content)) {
           for (const block of content) {
-            if (block.type === 'tool_result') {
-              const output = typeof block.content === 'string'
-                ? block.content
-                : JSON.stringify(block.content);
+            if (block?.type !== 'tool_use') continue;
+
+            const toolUseId = typeof block.id === 'string' ? block.id : null;
+            if (toolUseId && emittedToolUseIds.has(toolUseId)) {
+              continue;
+            }
+            // 若已收到 stream_event，但块中缺少 tool_use_id，优先避免重复发送
+            if (!toolUseId && sawStreamToolLifecycle) {
+              continue;
+            }
+
+            if (toolUseId) {
+              emittedToolUseIds.add(toolUseId);
+            }
+
+            const toolName = typeof block.name === 'string' ? block.name : '工具';
+            const inputText = typeof block.input === 'string'
+              ? block.input
+              : safeJsonStringify(block.input || {});
+
+            yield { type: 'tool_start', toolName };
+            yield { type: 'tool_end', toolName, toolInput: inputText };
+          }
+        }
+      }
+
+      // 工具执行结果（优先解析 message.content 中的 tool_result）
+      if (message.type === 'user') {
+        const userMessageContent = (message as any).message?.content;
+        let hasContentToolResult = false;
+
+        if (Array.isArray(userMessageContent)) {
+          for (const block of userMessageContent) {
+            if (block?.type !== 'tool_result') continue;
+
+            hasContentToolResult = true;
+            const toolUseId = typeof block.tool_use_id === 'string' ? block.tool_use_id : null;
+            if (toolUseId && emittedToolResultIds.has(toolUseId)) {
+              continue;
+            }
+
+            let output = extractToolResultOutput(block.content);
+            if (block.is_error === true && output) {
+              output = `[工具错误]\n${output}`;
+            }
+            output = truncateToolOutput(output);
+            if (!output) continue;
+
+            if (toolUseId) {
+              emittedToolResultIds.add(toolUseId);
+            }
+            yield { type: 'tool_result', toolOutput: output };
+          }
+        }
+
+        // 兼容旧字段：当 content 中没有 tool_result 时，回退到顶层 tool_use_result
+        if (!hasContentToolResult) {
+          const toolUseResult = (message as any).tool_use_result;
+          if (toolUseResult) {
+            let output = extractToolResultOutput(toolUseResult);
+            if ((toolUseResult as any).is_error === true && output) {
+              output = `[工具错误]\n${output}`;
+            }
+            output = truncateToolOutput(output);
+            if (output) {
               yield { type: 'tool_result', toolOutput: output };
             }
           }
