@@ -85,6 +85,7 @@ npm run dev
 | `WORKSPACE` | 否 | AI 工作目录，默认 `/workspace` |
 | `NOTIFY_USER_ID` | 否 | 启动时通知的用户 ID（open_id 或 chat_id） |
 | `FEISHU_OUTPUT_MODE` | 否 | 输出模式：`reply`（默认）或 `card` |
+| `FEISHU_REPLY_FORMAT` | 否 | reply 模式消息格式：`md`（默认）或 `text` |
 | `FEISHU_REPLY_SHOW_TOOL_CALLS` | 否 | reply 模式是否展示工具调用 |
 | `FEISHU_REPLY_SHOW_TOOL_INPUT` | 否 | reply 模式是否展示工具输入 |
 | `FEISHU_REPLY_SHOW_TOOL_RESULT` | 否 | reply 模式是否展示工具结果 |
@@ -149,6 +150,7 @@ docker compose up -d
 
 reply 模式可通过环境变量控制细节级别：
 
+- `FEISHU_REPLY_FORMAT`：消息格式，`md`（默认，post 富文本 md 节点）或 `text`（纯文本）
 - `FEISHU_REPLY_SHOW_TOOL_CALLS`：是否展示工具调用
 - `FEISHU_REPLY_SHOW_TOOL_INPUT`：是否展示工具输入
 - `FEISHU_REPLY_SHOW_TOOL_RESULT`：是否展示工具结果

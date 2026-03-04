@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config({ override: true });
 
 export type FeishuOutputMode = 'card' | 'reply';
+export type FeishuReplyFormat = 'text' | 'md';
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
   if (!value) return defaultValue;
@@ -15,6 +16,12 @@ function parseFeishuOutputMode(value: string | undefined): FeishuOutputMode {
   if (!value) return 'reply';
   const normalized = value.trim().toLowerCase();
   return normalized === 'card' ? 'card' : 'reply';
+}
+
+function parseFeishuReplyFormat(value: string | undefined): FeishuReplyFormat {
+  if (!value) return 'md';
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'text' ? 'text' : 'md';
 }
 
 export const config = {
@@ -33,6 +40,9 @@ export const config = {
 
   // 飞书输出模式：card（单卡片更新）| reply（按消息回复）
   feishuOutputMode: parseFeishuOutputMode(process.env.FEISHU_OUTPUT_MODE),
+
+  // reply 消息格式：md（默认，post 富文本 md 节点）| text（纯文本）
+  feishuReplyFormat: parseFeishuReplyFormat(process.env.FEISHU_REPLY_FORMAT),
 
   // reply 模式展示控制
   feishuReplyShowToolCalls: parseBoolean(process.env.FEISHU_REPLY_SHOW_TOOL_CALLS, true),

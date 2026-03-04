@@ -253,6 +253,10 @@ function isReplyOutputMode(): boolean {
   return config.feishuOutputMode === 'reply';
 }
 
+function isReplyMarkdownMode(): boolean {
+  return config.feishuReplyFormat === 'md';
+}
+
 function trimReplyText(content: string): string {
   const normalized = content.replace(/\r\n/g, '\n').trim();
   if (!normalized) return '（空内容）';
@@ -261,19 +265,44 @@ function trimReplyText(content: string): string {
   return `${normalized.slice(0, MAX_REPLY_TEXT_LENGTH)}\n...(已截断 ${remain} 字符)`;
 }
 
-function formatReplyText(content: string): string {
-  // 保留原有内容语义，只去掉卡片专用 markdown 装饰。
-  const normalized = content
+function stripReplyMarkdown(content: string): string {
+  return content
     .replace(/\*\*/g, '')
     .replace(/```[a-zA-Z0-9_-]*\n?/g, '')
     .replace(/```/g, '')
     .trim();
-
-  if (!normalized) return '';
-  return trimReplyText(normalized);
 }
 
-async function sendTextMessage(
+function formatReplyText(content: string): string {
+  const normalized = content.replace(/\r\n/g, '\n').trim();
+  if (!normalized) return '';
+
+  if (isReplyMarkdownMode()) {
+    return trimReplyText(normalized);
+  }
+
+  const plain = stripReplyMarkdown(normalized);
+  if (!plain) return '';
+  return trimReplyText(plain);
+}
+
+function buildReplyMarkdownPostContent(content: string): string {
+  const markdown = trimReplyText(content);
+  return JSON.stringify({
+    zh_cn: {
+      content: [
+        [
+          {
+            tag: 'md',
+            text: markdown,
+          },
+        ],
+      ],
+    },
+  });
+}
+
+async function sendPlainTextMessage(
   client: Lark.Client,
   receiveIdType: 'chat_id' | 'open_id',
   receiveId: string,
@@ -298,7 +327,47 @@ async function sendTextMessage(
   }
 }
 
-async function sendReplyText(client: Lark.Client, messageId: string, content: string): Promise<string | null> {
+async function sendMarkdownMessage(
+  client: Lark.Client,
+  receiveIdType: 'chat_id' | 'open_id',
+  receiveId: string,
+  content: string,
+): Promise<string | null> {
+  try {
+    const resp = await client.im.message.create({
+      params: { receive_id_type: receiveIdType },
+      data: {
+        receive_id: receiveId,
+        msg_type: 'post',
+        content: buildReplyMarkdownPostContent(content),
+      },
+    });
+    const messageId = resp.data?.message_id;
+    console.log(`[飞书] Markdown 富文本消息发送成功, message_id: ${messageId}`);
+    return messageId || null;
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.error(`[飞书] Markdown 富文本消息发送失败: ${errMsg}`);
+    return null;
+  }
+}
+
+async function sendTextMessage(
+  client: Lark.Client,
+  receiveIdType: 'chat_id' | 'open_id',
+  receiveId: string,
+  content: string,
+): Promise<string | null> {
+  if (isReplyMarkdownMode()) {
+    const messageId = await sendMarkdownMessage(client, receiveIdType, receiveId, content);
+    if (messageId) return messageId;
+    console.warn('[飞书] Markdown 消息发送失败，回退为纯文本');
+  }
+
+  return sendPlainTextMessage(client, receiveIdType, receiveId, content);
+}
+
+async function sendPlainReplyText(client: Lark.Client, messageId: string, content: string): Promise<string | null> {
   try {
     const resp = await client.im.message.reply({
       path: { message_id: messageId },
@@ -316,6 +385,36 @@ async function sendReplyText(client: Lark.Client, messageId: string, content: st
     console.error(`[飞书] 回复消息发送失败: ${errMsg}`);
     return null;
   }
+}
+
+async function sendMarkdownReply(client: Lark.Client, messageId: string, content: string): Promise<string | null> {
+  try {
+    const resp = await client.im.message.reply({
+      path: { message_id: messageId },
+      data: {
+        msg_type: 'post',
+        content: buildReplyMarkdownPostContent(content),
+        reply_in_thread: false,
+      },
+    });
+    const replyMessageId = resp.data?.message_id;
+    console.log(`[飞书] Markdown 富文本回复发送成功, message_id: ${replyMessageId}`);
+    return replyMessageId || null;
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.error(`[飞书] Markdown 富文本回复发送失败: ${errMsg}`);
+    return null;
+  }
+}
+
+async function sendReplyText(client: Lark.Client, messageId: string, content: string): Promise<string | null> {
+  if (isReplyMarkdownMode()) {
+    const replyMessageId = await sendMarkdownReply(client, messageId, content);
+    if (replyMessageId) return replyMessageId;
+    console.warn('[飞书] Markdown 回复失败，回退为纯文本回复');
+  }
+
+  return sendPlainReplyText(client, messageId, content);
 }
 
 async function addAckReaction(client: Lark.Client, messageId: string): Promise<void> {
@@ -367,6 +466,7 @@ export function startFeishuBot() {
       showQueueNotice: config.feishuReplyShowQueueNotice,
       ackReaction: config.feishuReplyAckReaction,
       ackEmoji: config.feishuReplyAckEmoji,
+      format: config.feishuReplyFormat,
     },
     feishuAppIdSuffix: config.feishuAppId ? config.feishuAppId.slice(-6) : '',
   });
