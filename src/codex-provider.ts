@@ -206,6 +206,9 @@ type CodexInputItem =
   | { type: 'text'; text: string }
   | { type: 'local_image'; path: string };
 
+const CODEX_SANDBOX_MODE = 'danger-full-access';
+const CODEX_APPROVAL_POLICY = 'never';
+
 function buildCodexTurnInput(prompt: string, inputImages?: InputImage[]): string | CodexInputItem[] {
   const validImages = (inputImages || []).filter((item) => fileExists(item.filePath));
   if (validImages.length === 0) {
@@ -320,8 +323,8 @@ async function getCodex(): Promise<any> {
     const { Codex } = await import('@openai/codex-sdk');
     codexInstance = new Codex({
       config: {
-        sandbox_mode: 'workspace-write',
-        approval_policy: 'never',
+        sandbox_mode: CODEX_SANDBOX_MODE,
+        approval_policy: CODEX_APPROVAL_POLICY,
       },
     });
   }
@@ -355,12 +358,16 @@ export async function* streamCodexChat(
       console.log(`[Codex] 恢复线程: ${sessionId}`);
       thread = codex.resumeThread(sessionId, {
         workingDirectory,
+        sandboxMode: CODEX_SANDBOX_MODE,
+        approvalPolicy: CODEX_APPROVAL_POLICY,
         skipGitRepoCheck: true,
       });
     } else {
       console.log(`[Codex] 创建新线程`);
       thread = codex.startThread({
         workingDirectory,
+        sandboxMode: CODEX_SANDBOX_MODE,
+        approvalPolicy: CODEX_APPROVAL_POLICY,
         skipGitRepoCheck: true,
       });
     }
