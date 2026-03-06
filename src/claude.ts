@@ -180,6 +180,7 @@ export interface StreamClaudeOptions {
   mcpServers?: Record<string, McpServer>;
   abortSignal?: AbortSignal;
   inputImages?: InputImage[];
+  workingDirectory?: string;
 }
 
 export async function* streamClaudeChat(
@@ -187,8 +188,9 @@ export async function* streamClaudeChat(
   sessionId: string | null,
   options?: StreamClaudeOptions
 ): AsyncGenerator<ClaudeEvent> {
+  const workingDirectory = options?.workingDirectory || config.workspace;
   const queryOptions: Record<string, unknown> = {
-    cwd: config.workspace,
+    cwd: workingDirectory,
     includePartialMessages: true,
     permissionMode: 'bypassPermissions',
     settingSources: ['project', 'user'],
@@ -212,6 +214,13 @@ export async function* streamClaudeChat(
   let sawStreamToolLifecycle = false;
 
   try {
+    logDetail('turn.start', {
+      sessionId,
+      promptLength: prompt.length,
+      workingDirectory,
+      configuredWorkspace: config.workspace,
+    });
+
     const useStreamingInput = Boolean(options?.mcpServers || (options?.inputImages?.length || 0) > 0);
     const promptInput = useStreamingInput
       ? generateMessages(prompt, options?.inputImages)

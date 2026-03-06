@@ -53,6 +53,7 @@ export async function* streamChat(
       mcpServers,
       abortSignal: options?.abortSignal,
       inputImages: options?.inputImages,
+      workingDirectory: options?.workingDirectory,
     });
   }
 }

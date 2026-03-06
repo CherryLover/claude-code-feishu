@@ -38,6 +38,10 @@ export const config = {
   // 启动通知（可选，填 open_id 或 chat_id）
   notifyUserId: process.env.NOTIFY_USER_ID || '',
 
+  // 开发者目录特例（可选，命中后优先使用本机目录）
+  developerOpenId: process.env.DEVELOPER_OPEN_ID || '',
+  developerWorkspace: process.env.DEVELOPER_WORKSPACE || (process.env.HOME || ''),
+
   // 飞书输出模式：card（单卡片更新）| reply（按消息回复）
   feishuOutputMode: parseFeishuOutputMode(process.env.FEISHU_OUTPUT_MODE),
 

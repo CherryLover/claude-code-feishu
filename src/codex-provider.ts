@@ -145,16 +145,26 @@ function getRuntimePaths() {
   };
 }
 
-function resolveWorkingDirectory(): string {
+function resolveWorkingDirectory(preferredWorkingDirectory?: string): string {
+  if (preferredWorkingDirectory) {
+    fs.mkdirSync(preferredWorkingDirectory, { recursive: true });
+  }
+
+  const configuredWorkspaceExists = dirExists(config.workspace);
+
   const candidates = [
+    preferredWorkingDirectory,
     config.workspace,
     process.cwd(),
     PROJECT_ROOT,
   ];
-  const uniqueCandidates = [...new Set(candidates.filter(Boolean))];
+  const uniqueCandidates = [
+    ...new Set(candidates.filter((candidate): candidate is string => Boolean(candidate))),
+  ];
   const resolved = uniqueCandidates.find((candidate) => dirExists(candidate));
 
   logDetail('workspace.resolve', {
+    preferredWorkingDirectory: preferredWorkingDirectory || null,
     configuredWorkspace: config.workspace,
     candidates: uniqueCandidates.map((candidate) => ({
       path: candidate,
@@ -167,8 +177,12 @@ function resolveWorkingDirectory(): string {
     throw new Error(`未找到可用工作目录，请检查 WORKSPACE 配置。当前 WORKSPACE=${config.workspace}`);
   }
 
-  if (resolved !== config.workspace) {
-    console.warn(`[Codex] WORKSPACE 不存在，已回退到: ${resolved}`);
+  const usingPreferredWorkingDirectory = Boolean(
+    preferredWorkingDirectory && resolved === preferredWorkingDirectory,
+  );
+
+  if (!configuredWorkspaceExists && !usingPreferredWorkingDirectory && resolved !== config.workspace) {
+    console.warn(`[Codex] WORKSPACE 不存在 (${config.workspace})，已回退到: ${resolved}`);
   }
 
   return resolved;
@@ -340,7 +354,7 @@ export async function* streamCodexChat(
   let workingDirectory = config.workspace;
 
   try {
-    workingDirectory = resolveWorkingDirectory();
+    workingDirectory = resolveWorkingDirectory(options?.workingDirectory);
     const turnInput = buildCodexTurnInput(prompt, options?.inputImages);
     const inputImageCount = options?.inputImages?.length || 0;
 
@@ -350,6 +364,7 @@ export async function* streamCodexChat(
       promptPreview: prompt.slice(0, 200),
       workingDirectory,
       configuredWorkspace: config.workspace,
+      preferredWorkingDirectory: options?.workingDirectory || null,
       inputImageCount,
     });
 

@@ -7,15 +7,17 @@
 - **会话隔离（按 chatId）**：`sessions` Map 以 `chatId` 为 key，不同聊天窗口各自维护独立 Claude 会话
 - **并发控制（按 chatId）**：`processing` Set 防止同一聊天内并发请求
 - **私聊 + 群聊**：私聊和群聊都能响应，群聊只响应 @机器人的消息
+- **私聊目录隔离（按 open_id）**：私聊消息自动使用 `<项目目录>/workspace/user_<open_id>`，首次请求自动创建目录
+- **开发者目录特例**：当私聊发送者 `open_id` 命中 `DEVELOPER_OPEN_ID` 时，优先使用 `DEVELOPER_WORKSPACE`（默认当前系统用户目录）
+- **用户身份传递**：`senderOpenId` / `senderName` 会透传给 Provider，用于上下文和工具执行
 
 ### 不足
 
 | 问题 | 说明 |
 |------|------|
-| 工作目录共享 | 所有用户共用 `config.workspace`，文件操作互相影响 |
 | 群聊无用户级隔离 | 同一群里多人共享 Claude 会话，`/clear` 会影响所有人 |
 | 群聊并发阻塞 | 按 `chatId` 加锁，群聊中一人使用时其他人被阻塞 |
-| 用户身份未传递 | `senderId` 仅用于日志，未传给 Claude |
+| 进程级不隔离 | 所有用户仍在同一进程内运行，共享 CPU/内存上限 |
 
 ### 多用户场景支持情况
 
@@ -23,27 +25,28 @@
 |------|---------|
 | 多个私聊用户同时使用 | 支持（各自独立 chatId） |
 | 同一群里多人使用 | 不支持（共享会话，互相干扰） |
-| 用户级工作目录隔离 | 不支持（共用一个目录） |
+| 用户级工作目录隔离 | 私聊支持（`<项目目录>/workspace/user_<open_id>`）；群聊不支持 |
 
 ## 方案对比
 
-### 方案一：代码层隔离（推荐）
+### 方案一：代码层隔离（已实现）
 
-改动当前代码，按 userId 隔离会话和工作目录。
+按 userId 隔离私聊工作目录。
 
 **改动点：**
 
-1. `streamClaudeChat` 增加 `userId` 参数，使用 `workspace/{userId}/` 作为 cwd
-2. `feishu.ts` 将 `senderId` 传递到 Claude 调用链
-3. 首次使用时自动创建用户目录
+1. `feishu.ts` 从私聊消息提取 `senderOpenId`
+2. 映射目录为 `<项目目录>/workspace/user_<open_id>` 并自动创建
+3. 通过 `streamChat` 透传 `workingDirectory` 到 Claude/Codex 执行链
 
 **目录结构：**
 
 ```
 /workspace/
-  ├── ou_xxxx1/   ← 用户A（自动创建）
-  ├── ou_xxxx2/   ← 用户B（自动创建）
-  └── ou_xxxx3/   ← 用户C（自动创建）
+  ├── shared/          ← 群聊/非私聊共享目录
+  ├── user_ou_xxxx1/   ← 用户A（自动创建）
+  ├── user_ou_xxxx2/   ← 用户B（自动创建）
+  └── user_ou_xxxx3/   ← 用户C（自动创建）
 ```
 
 **Docker 部署只需挂载总目录：**
@@ -79,4 +82,4 @@ volumes:
 
 ## 结论
 
-对于大多数场景，**方案一**足够。只有需要进程级完全隔离时才考虑方案二。
+当前实现已覆盖“多人私聊同一个机器人”的目录隔离需求。只有需要进程级完全隔离时再考虑方案二。

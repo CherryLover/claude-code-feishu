@@ -27,6 +27,7 @@ export interface StreamChatOptions {
   senderOpenId?: string;
   senderName?: string;
   inputImages?: InputImage[];
+  workingDirectory?: string;
 }
 
 export interface Session {

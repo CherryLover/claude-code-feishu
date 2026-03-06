@@ -118,6 +118,9 @@ const WS_REFRESH_INTERVAL = 30 * 60 * 1000; // 每 30 分钟刷新一次连接
 const senderNameCache = new Map<string, string>(); // openId -> 发送者姓名
 const DEFAULT_CHAT_TURN_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟
 const MAX_REPLY_TEXT_LENGTH = 6000;
+const PROJECT_WORKSPACE_ROOT = path.join(PROJECT_ROOT, 'workspace');
+const PRIVATE_WORKSPACE_PREFIX = 'user_';
+const SHARED_WORKSPACE_DIR = path.join(PROJECT_WORKSPACE_ROOT, 'shared');
 
 interface DownloadedImageInput {
   filePath: string;
@@ -137,6 +140,29 @@ const IMAGE_EXT_BY_MIME: Record<string, string> = {
   'image/gif': '.gif',
   'image/webp': '.webp',
 };
+
+function sanitizeWorkspaceSegment(value: string): string {
+  return value.trim().replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function resolveMessageWorkingDirectory(chatType: string, senderOpenId?: string): string {
+  if (chatType === 'p2p' && senderOpenId) {
+    if (config.developerOpenId && senderOpenId === config.developerOpenId) {
+      return config.developerWorkspace || os.homedir();
+    }
+
+    const safeUserId = sanitizeWorkspaceSegment(senderOpenId);
+    if (safeUserId) {
+      return path.join(PROJECT_WORKSPACE_ROOT, `${PRIVATE_WORKSPACE_PREFIX}${safeUserId}`);
+    }
+  }
+
+  return SHARED_WORKSPACE_DIR;
+}
+
+async function ensureWorkingDirectory(workspacePath: string): Promise<void> {
+  await fs.promises.mkdir(workspacePath, { recursive: true });
+}
 
 function getSingleHeaderValue(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
@@ -455,7 +481,8 @@ export function startFeishuBot() {
     pid: process.pid,
     cwd: process.cwd(),
     aiProvider: config.aiProvider,
-    workspace: config.workspace,
+    configuredWorkspace: config.workspace,
+    runtimeWorkspaceRoot: PROJECT_WORKSPACE_ROOT,
     chatTurnTimeoutMs: getChatTurnTimeoutMs(),
     feishuOutputMode: config.feishuOutputMode,
     replyOptions: {
@@ -631,7 +658,12 @@ async function sendStartupNotification(client: Lark.Client) {
 
   try {
     if (isReplyOutputMode()) {
-      await sendTextMessage(client, isOpenId ? 'open_id' : 'chat_id', userId, `✅ 机器人已启动\n工作目录: ${config.workspace}`);
+      await sendTextMessage(
+        client,
+        isOpenId ? 'open_id' : 'chat_id',
+        userId,
+        `✅ 机器人已启动\n目录根: ${PROJECT_WORKSPACE_ROOT}\n私聊目录: ${PROJECT_WORKSPACE_ROOT}/user_<open_id>`,
+      );
       console.log(`[启动通知] 发送成功`);
       return;
     }
@@ -641,7 +673,10 @@ async function sendStartupNotification(client: Lark.Client) {
       data: {
         receive_id: userId,
         msg_type: 'interactive',
-        content: buildFeishuCard('Claude Code', `✅ 机器人已启动\n\n工作目录: \`${config.workspace}\``),
+        content: buildFeishuCard(
+          'Claude Code',
+          `✅ 机器人已启动\n\n目录根: \`${PROJECT_WORKSPACE_ROOT}\`\n私聊目录: \`${PROJECT_WORKSPACE_ROOT}/user_<open_id>\``,
+        ),
       },
     });
     console.log(`[启动通知] 发送成功`);
@@ -731,6 +766,7 @@ async function sendCardToUser(
 async function handleMessage(client: Lark.Client, data: any) {
   const message = data.message;
   const chatId = message.chat_id;
+  const chatType = message.chat_type;
   const incomingMessageId = message.message_id;
   const useReplyMode = isReplyOutputMode();
 
@@ -843,7 +879,7 @@ async function handleMessage(client: Lark.Client, data: any) {
   }
 
   // 群聊中去掉 @机器人 的部分
-  if (message.chat_type === 'group' && data.message?.mentions) {
+  if (chatType === 'group' && data.message?.mentions) {
     for (const mention of data.message.mentions) {
       text = text.replace(`@_user_${mention.id?.union_id}`, '').trim();
       // 也清理 @用户名 格式
@@ -904,6 +940,33 @@ async function handleMessage(client: Lark.Client, data: any) {
   } else if (senderOpenId) {
     console.log(`[消息上下文] 当前发送者 open_id: ${senderOpenId}`);
   }
+
+  const workingDirectory = resolveMessageWorkingDirectory(chatType, senderOpenId);
+  try {
+    await ensureWorkingDirectory(workingDirectory);
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.error(`[工作目录] 创建失败: ${workingDirectory} | ${errMsg}`);
+    logFeishuRuntime('message.handle.workspace_error', {
+      messageId: incomingMessageId,
+      chatId,
+      chatType,
+      senderOpenId: senderOpenId || null,
+      workingDirectory,
+      error: errMsg,
+    });
+    await sendResponseForIncoming(client, chatId, incomingMessageId, 'Claude Code', `❌ 无法准备用户工作目录：${errMsg}`);
+    return;
+  }
+
+  console.log(`[工作目录] 当前会话目录: ${workingDirectory}`);
+  logFeishuRuntime('message.handle.workspace', {
+    messageId: incomingMessageId,
+    chatId,
+    chatType,
+    senderOpenId: senderOpenId || null,
+    workingDirectory,
+  });
 
   const providerName = getProviderName();
   console.log(`[${providerName}] 开始处理...`);
@@ -969,6 +1032,7 @@ async function handleMessage(client: Lark.Client, data: any) {
       senderOpenId,
       senderName,
       inputImages,
+      workingDirectory,
     });
 
     for await (const event of stream) {

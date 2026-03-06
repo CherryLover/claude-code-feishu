@@ -12,6 +12,7 @@
 - **工具调用** — 完整支持 Bash、文件读写、搜索等工具，可按开关展示调用/输入/结果
 - **会话管理** — 按聊天维度维护独立会话上下文，支持清除和中断
 - **群聊 & 私聊** — 群聊中 @机器人 触发，私聊直接对话
+- **私聊目录隔离** — 私聊按用户 `open_id` 自动使用独立工作目录（`<项目目录>/workspace/user_<open_id>`）
 - **富文本支持** — 支持飞书纯文本和富文本（Post）消息类型
 - **文件发送** — AI 可直接通过飞书发送文件给用户（图片、文档、音频等）
 - **双输出模式** — 支持 `card`（单卡片实时更新）与 `reply`（针对用户消息逐条回复）
@@ -82,7 +83,9 @@ npm run dev
 | `OPENAI_BASE_URL` | 否 | OpenAI API 代理地址 |
 | `FEISHU_APP_ID` | 是 | 飞书应用 ID |
 | `FEISHU_APP_SECRET` | 是 | 飞书应用密钥 |
-| `WORKSPACE` | 否 | AI 工作目录，默认 `/workspace` |
+| `WORKSPACE` | 否 | Provider 备用工作目录，默认 `/workspace`；私聊默认使用 `<项目目录>/workspace/user_<open_id>` |
+| `DEVELOPER_OPEN_ID` | 否 | 开发者自己的飞书 `open_id`；私聊命中后优先使用 `DEVELOPER_WORKSPACE` |
+| `DEVELOPER_WORKSPACE` | 否 | 开发者私聊命中时使用的本机目录；默认当前系统用户目录 |
 | `NOTIFY_USER_ID` | 否 | 启动时通知的用户 ID（open_id 或 chat_id） |
 | `FEISHU_OUTPUT_MODE` | 否 | 输出模式：`reply`（默认）或 `card` |
 | `FEISHU_REPLY_FORMAT` | 否 | reply 模式消息格式：`md`（默认）或 `text` |
@@ -189,6 +192,8 @@ src/
 - **3 秒超时处理** — 事件处理器立即返回，通过 `setImmediate()` 异步调用 AI，避免飞书超时重推
 - **会话持久化** — `Map<chatId, sessionId>` 维护会话映射，支持多轮对话
 - **并发控制** — `Set<chatId>` 跟踪处理中的聊天，拒绝并发请求
+- **私聊目录隔离** — 私聊消息自动映射到 `<项目目录>/workspace/user_<open_id>`，首次请求自动创建目录
+- **开发者目录特例** — 当私聊发送者 `open_id` 命中 `DEVELOPER_OPEN_ID` 时，优先使用 `DEVELOPER_WORKSPACE`（默认当前系统用户目录）
 - **统一事件模型** — 两个 Provider 输出相同的 `ClaudeEvent` 类型，上层无需区分
 
 ## 开发

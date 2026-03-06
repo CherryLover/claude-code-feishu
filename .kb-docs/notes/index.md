@@ -42,3 +42,25 @@
   - `src/provider.ts`
   - `src/formatter.ts`
 - **经验教训**: 飞书发送接口支持 receive_id_type=open_id 直接发单聊，且响应里可回传 chat_id；工具层应避免把参数命名限制成单一路径，减少模型误用。
+
+## 修正 Codex 私聊工作目录误报 WORKSPACE 回退日志
+- **日期**: 2026-03-06
+- **标签**: codex, workspace, bug-fix, logging
+- **问题**: 私聊消息会显式传入用户级 workingDirectory，但 resolveWorkingDirectory 只要最终选中的目录不等于 config.workspace 就打印 'WORKSPACE 不存在，已回退到'，导致正常的用户隔离目录被误报为目录不存在。
+- **解决方案**: 在 src/codex-provider.ts 中先判断 config.workspace 是否真实存在，再识别当前是否正在使用 preferredWorkingDirectory。只有在 configured WORKSPACE 不存在、且当前不是使用显式传入的会话工作目录时，才打印回退告警；同时把告警文本补充为包含原始 WORKSPACE 路径。
+- **相关文件**:
+  - `src/codex-provider.ts`
+- **经验教训**: 带有多级候选目录的解析逻辑，日志条件要区分 '显式优先目录' 与 '异常回退'，否则在多租户/会话隔离场景下很容易产生误导性告警。
+
+## 为开发者 open_id 增加本机目录直连映射
+- **日期**: 2026-03-06
+- **标签**: feishu, workspace, developer, feature
+- **问题**: 默认私聊目录会落到项目内的 workspace/user_<open_id>。开发者自己调试时，希望命中指定 open_id 后直接使用本机用户目录，便于访问本地工程与文件。
+- **解决方案**: 新增 DEVELOPER_OPEN_ID 和 DEVELOPER_WORKSPACE 配置；在 feishu.ts 的 resolveMessageWorkingDirectory 中优先判断私聊发送者是否命中开发者 open_id，命中则直接返回开发者目录，否则继续走原来的 user_<open_id> 隔离目录。并把本地 .env 写入为 ou_d5ab33ba157d48139acb3b2c2b131036 -> /Users/jiangjiwei。
+- **相关文件**:
+  - `src/config.ts`
+  - `src/feishu.ts`
+  - `.env.example`
+  - `README.md`
+  - `doc/multi-user.md`
+- **经验教训**: 用户级工作目录策略里如果存在开发者调试诉求，最好预留显式 override，而不是把个人特例硬编码进默认目录规则。
