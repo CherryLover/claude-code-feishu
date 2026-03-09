@@ -77,3 +77,14 @@
   - `README.md`
   - `.env.example`
 - **经验教训**: 飞书里的过程展示更适合用一张轻量状态卡持续 patch，而不是把每个中间事件都当聊天消息发送；过程摘要和最终正文应分层展示。
+
+## Codex notify 脚本 stdout 污染导致 JSON 事件流解析失败
+- **日期**: 2026-03-09
+- **标签**: codex, bug-fix, feishu, notification
+- **问题**: Codex SDK 流式读取 exec --experimental-json 输出时，收到普通文本 '* Removing previously sent notification...'，触发 JSON.parse 失败，飞书进度卡片停留在执行出错。
+- **解决方案**: 排查到 ~/.codex/config.toml 启用了 notify 脚本，脚本中的 terminal-notifier 会向 stdout 输出日志。将 ~/.codex/script_notify_on_finish.sh 中 terminal-notifier 调用改为重定向到 /dev/null，并忽略通知失败，避免污染 Codex JSONL 输出。
+- **相关文件**:
+  - `/Users/jiangjiwei/.codex/config.toml`
+  - `/Users/jiangjiwei/.codex/script_notify_on_finish.sh`
+  - `src/codex-provider.ts`
+- **经验教训**: 所有被 Codex SDK 作为机器可解析通道消费的 stdout 都必须保持纯净；通知、日志、调试信息应写入 stderr 或直接静默。
