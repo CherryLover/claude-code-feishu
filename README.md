@@ -15,7 +15,7 @@
 - **私聊目录隔离** — 私聊按用户 `open_id` 自动使用独立工作目录（`<项目目录>/workspace/user_<open_id>`）
 - **富文本支持** — 支持飞书纯文本和富文本（Post）消息类型
 - **文件发送** — AI 可直接通过飞书发送文件给用户（图片、文档、音频等）
-- **进度卡 + 最终回复** — 固定使用单张进度卡展示当前执行项与计数，最终结果回复到用户原消息下
+- **进度卡 + 最终回复** — 固定使用单张进度卡展示当前执行项与计数，最终结果回复到用户原消息下；Token/上下文统计会追加在进度卡尾部
 - **消息回执** — 收到消息后可给用户原消息添加 reaction，表示已收到并开始处理
 - **并发控制** — 同一聊天同时只处理一条消息，避免混乱
 - **消息去重** — 5 分钟 TTL，防止超时重推导致重复处理
@@ -88,7 +88,7 @@ npm run dev
 | `DEVELOPER_WORKSPACE` | 否 | 开发者私聊命中时使用的本机目录；默认当前系统用户目录 |
 | `NOTIFY_USER_ID` | 否 | 启动时通知的用户 ID（open_id 或 chat_id） |
 | `FEISHU_REPLY_FORMAT` | 否 | 最终 reply 正文格式：`md`（默认）或 `text` |
-| `FEISHU_REPLY_SHOW_USAGE` | 否 | 最终 reply 是否展示 Token/费用 |
+| `FEISHU_REPLY_SHOW_USAGE` | 否 | 是否在进度卡尾部展示 Token/费用（Claude 额外显示上下文占用） |
 | `FEISHU_REPLY_ACK_REACTION` | 否 | 收到消息后是否给用户原消息添加 reaction |
 | `FEISHU_REPLY_ACK_EMOJI` | 否 | reaction 的 emoji 类型，默认 `OK` |
 
@@ -147,7 +147,7 @@ docker compose up -d
 2. 发送并持续更新一张进度卡
 3. 最终结果使用 `reply` 回复到用户原消息下
 
-进度卡只展示摘要信息：
+进度卡默认展示摘要信息；开启 `FEISHU_REPLY_SHOW_USAGE` 后，会在完成时追加 Token / 费用统计（Claude 还会显示上下文占用）：
 
 - 当前执行项（工具名 + 简单参数摘要，思考单独显示为“思考中”）
 - 工具调用次数
@@ -157,7 +157,7 @@ docker compose up -d
 可通过环境变量控制最终 reply 的展示细节：
 
 - `FEISHU_REPLY_FORMAT`：最终正文格式，`md`（默认，post 富文本 md 节点）或 `text`（纯文本）
-- `FEISHU_REPLY_SHOW_USAGE`：是否展示 Token/费用信息
+- `FEISHU_REPLY_SHOW_USAGE`：是否在进度卡尾部展示 Token/费用信息
 - `FEISHU_REPLY_ACK_REACTION`：是否给用户消息添加 reaction 回执
 
 ## 项目结构

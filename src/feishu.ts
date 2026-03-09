@@ -134,6 +134,7 @@ interface ProgressCardState {
   reasoningCount: number;
   startedAt: number;
   answerPhaseStarted: boolean;
+  usageInfo?: UsageInfo;
 }
 
 function getChatTurnTimeoutMs(): number {
@@ -487,12 +488,16 @@ function createProgressCardState(current = '准备中'): ProgressCardState {
 
 function getProgressCardMarkdown(state: ProgressCardState): string {
   const elapsedSeconds = Math.max(0, Math.floor((Date.now() - state.startedAt) / 1000));
-  return buildProgressCardContent(
+  let content = buildProgressCardContent(
     state.current,
     state.toolCallCount,
     state.reasoningCount,
     elapsedSeconds,
   );
+  if (config.feishuReplyShowUsage && state.usageInfo) {
+    content += formatUsageInfo(state.usageInfo);
+  }
+  return content;
 }
 
 async function syncProgressCard(
@@ -1090,6 +1095,7 @@ async function handleMessage(client: Lark.Client, data: any) {
             resultContent = event.content;
           }
           usageInfo = event.usage;
+          progressState.usageInfo = event.usage;
           progressState.current = '输出完成';
           if (progressCardMessageId) {
             await syncProgressCard(client, progressCardMessageId, providerName, progressState);
@@ -1110,7 +1116,7 @@ async function handleMessage(client: Lark.Client, data: any) {
     if (!finalReplyText) {
       finalReplyText = finalStatusMessage || '（无响应）';
     }
-    if (usageInfo && config.feishuReplyShowUsage) {
+    if (!progressCardMessageId && usageInfo && config.feishuReplyShowUsage) {
       finalReplyText += formatUsageInfo(usageInfo);
     }
     await sendReplyText(client, incomingMessageId, finalReplyText);

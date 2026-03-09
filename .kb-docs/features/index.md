@@ -20,3 +20,16 @@
   - `README.md` - 文档补充私聊目录隔离说明
   - `doc/multi-user.md` - 多用户方案文档更新为已实现状态
 - **备注**: 适用于多人私聊同一个机器人；群聊仍按 chatId 共享上下文与并发锁。
+
+## 进度卡追加 Usage 统计
+- **标签**: feishu, ui, reply, claude, codex
+- **描述**: 将最终回复中的 Token 与上下文统计迁移到进度卡尾部，避免正文和统计信息混在一起。
+- **入口**: 飞书消息处理入口 src/feishu.ts:handleMessage
+- **核心流程**:
+  1. 在 result 事件中把 usage 信息写入 ProgressCardState
+  2. getProgressCardMarkdown 根据配置在进度卡尾部追加 usage markdown
+  3. 最终 reply 默认只发送答案正文；仅在进度卡发送失败时回退到 reply 尾部
+- **关键文件**:
+  - `src/feishu.ts` - 进度卡状态、usage 追加逻辑和最终 reply 的兜底逻辑
+  - `README.md` - 同步更新 usage 展示位置和环境变量说明
+- **备注**: Claude 保留上下文窗口占用与剩余比例展示；Codex 保留输入输出 Token 与费用展示。
