@@ -33,3 +33,26 @@
   - `src/feishu.ts` - 进度卡状态、usage 追加逻辑和最终 reply 的兜底逻辑
   - `README.md` - 同步更新 usage 展示位置和环境变量说明
 - **备注**: Claude 保留上下文窗口占用与剩余比例展示；Codex 保留输入输出 Token 与费用展示。
+
+## SQLite 定时任务调度与飞书主动推送
+- **标签**: feature, scheduler, sqlite, feishu, cron
+- **描述**: 新增基于 SQLite 的单实例定时任务能力，可按 cron 执行 AI 任务并主动推送飞书结果。
+- **入口**: 启动机器人时读取 SCHEDULER_ENABLED；本地通过 npm run schedule -- <command> 管理任务。
+- **核心流程**:
+  1. 配置模块读取 SCHEDULER_ENABLED、SCHEDULER_DB_PATH、SCHEDULER_TASK_TIMEOUT_MS。
+  2. feishu.ts 启动时创建 Lark Client，并在启用时启动 SchedulerService。
+  3. SchedulerService 从 SQLite 加载 enabled 任务，用 node-cron 注册本地调度。
+  4. 触发后 runner 调用 executeTask 复用现有 Provider 执行链，并将结果主动发送到 chat_id 或 open_id。
+  5. schedule_runs 记录每次执行状态、输出消息 ID 和错误信息；scheduler-cli 提供增删改查和手动执行。
+- **关键文件**:
+  - `src/config.ts` - 新增定时任务配置项和默认 SQLite 路径
+  - `src/feishu.ts` - 启动时接入 SchedulerService，并复用公共执行器处理消息
+  - `src/feishu-messages.ts` - 抽离飞书消息发送、reply、卡片更新和 usage 展示
+  - `src/task-executor.ts` - 抽离 AI 执行与超时/中断/进度处理公共逻辑
+  - `src/task-progress.ts` - 统一任务进度状态和卡片 markdown 渲染
+  - `src/scheduler/db.ts` - SQLite 建表、任务 CRUD 和运行记录读写
+  - `src/scheduler/service.ts` - node-cron 注册、重载和手动触发入口
+  - `src/scheduler/runner.ts` - 定时任务执行、飞书推送和运行记录收尾
+  - `src/scheduler-cli.ts` - 本地 schedule CLI，支持 list/add/update/enable/disable/delete/run/runs
+  - `README.md` - 补充定时任务环境变量、CLI 用法和结构说明
+- **备注**: 当前实现按单实例设计，不处理多实例重复触发；Docker Compose 示例已透传调度环境变量。

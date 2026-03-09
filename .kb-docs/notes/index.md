@@ -88,3 +88,18 @@
   - `/Users/jiangjiwei/.codex/script_notify_on_finish.sh`
   - `src/codex-provider.ts`
 - **经验教训**: 所有被 Codex SDK 作为机器可解析通道消费的 stdout 都必须保持纯净；通知、日志、调试信息应写入 stderr 或直接静默。
+
+## AI 通过 MCP 工具管理 SQLite 定时任务
+- **日期**: 2026-03-09
+- **标签**: scheduler, mcp, feishu, sqlite, note
+- **问题**: 仅有 schedule CLI 还不够，用户希望直接在飞书对话里让 AI 创建、修改、停用和立即执行定时任务，而不是切到终端手动管理。
+- **解决方案**: 新增 src/scheduler/actions.ts 作为调度业务动作层，提供 schedule_create/update/list/enable/disable/delete/run_now；同时接入 Claude 的 src/tools.ts 和 Codex 的 src/mcp-server.ts。为解决 Codex MCP 独立进程无法直接刷新主进程调度器的问题，在 src/scheduler/service.ts 中增加 5 秒数据库轮询同步，任何 AI/CLI 对 SQLite 的修改都会被主进程自动加载。provider.ts 额外注入当前 chatId 和 workingDirectory 的系统信息，指导 AI 在创建定时时优先使用当前聊天和当前工作目录。
+- **相关文件**:
+  - `src/scheduler/actions.ts`
+  - `src/scheduler/service.ts`
+  - `src/tools.ts`
+  - `src/mcp-server.ts`
+  - `src/provider.ts`
+  - `src/formatter.ts`
+  - `README.md`
+- **经验教训**: 当工具执行进程与主服务进程不在同一内存空间时，不要依赖单例刷新运行态；对 SQLite 这类本地持久层，增加轻量轮询同步通常比引入 IPC 更简单稳妥。

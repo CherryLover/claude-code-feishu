@@ -23,6 +23,15 @@ import {
   createTask,
   createCalendarEvent,
 } from './feishu-api.js';
+import {
+  createScheduleAction,
+  deleteScheduleAction,
+  disableScheduleAction,
+  enableScheduleAction,
+  listSchedulesAction,
+  runScheduleNowAction,
+  updateScheduleAction,
+} from './scheduler/actions.js';
 
 // --- 重定向 console.log 到 stderr（Lark SDK 的 error 级日志用的是 console.log，会污染 stdout）---
 
@@ -274,6 +283,97 @@ server.tool(
     );
     return { content: [{ type: 'text' as const, text: result.message }] };
   }
+);
+
+server.tool(
+  'schedule_list',
+  '查看当前所有定时任务。适用于用户询问“有哪些定时”“查看日报定时”“当前有哪些周期任务”。',
+  {
+    include_disabled: z.boolean().optional().describe('是否包含已停用任务，默认 true'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: listSchedulesAction(args.include_disabled !== false) }],
+  })
+);
+
+server.tool(
+  'schedule_create',
+  '创建新的定时任务。适用于每天/每周/周期性执行某件事，并把结果主动推送到飞书。若当前上下文未自动提供目标或工作目录，请显式传 target_id 和 working_directory。',
+  {
+    id: z.string().optional().describe('可选，任务 ID；不传则根据名称自动生成'),
+    name: z.string().describe('任务名称，例如“日报推送”'),
+    cron: z.string().describe('cron 表达式，例如“0 30 9 * * 1-5”表示工作日 9:30'),
+    timezone: z.string().optional().describe('时区，默认 Asia/Shanghai'),
+    prompt: z.string().describe('到点后真正执行的 AI 指令内容'),
+    target_type: z.enum(['chat_id', 'open_id']).optional().describe('结果发送目标类型，默认 chat_id'),
+    target_id: z.string().optional().describe('结果发送目标 ID'),
+    working_directory: z.string().optional().describe('执行目录'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: createScheduleAction(args, { client: getLarkClient() }) }],
+  })
+);
+
+server.tool(
+  'schedule_update',
+  '更新已有定时任务。适用于修改 cron、执行内容、发送目标或工作目录。',
+  {
+    id: z.string().describe('要更新的任务 ID'),
+    name: z.string().optional().describe('新的任务名称'),
+    cron: z.string().optional().describe('新的 cron 表达式'),
+    timezone: z.string().optional().describe('新的时区'),
+    prompt: z.string().optional().describe('新的 AI 执行内容'),
+    target_type: z.enum(['chat_id', 'open_id']).optional().describe('新的结果发送目标类型'),
+    target_id: z.string().optional().describe('新的结果发送目标 ID'),
+    working_directory: z.string().optional().describe('新的执行目录'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: updateScheduleAction(args, { client: getLarkClient() }) }],
+  })
+);
+
+server.tool(
+  'schedule_enable',
+  '启用一个已停用的定时任务。',
+  {
+    id: z.string().describe('任务 ID'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: enableScheduleAction(args.id) }],
+  })
+);
+
+server.tool(
+  'schedule_disable',
+  '停用一个定时任务，但保留配置和历史记录。',
+  {
+    id: z.string().describe('任务 ID'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: disableScheduleAction(args.id) }],
+  })
+);
+
+server.tool(
+  'schedule_delete',
+  '删除一个定时任务。',
+  {
+    id: z.string().describe('任务 ID'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: deleteScheduleAction(args.id) }],
+  })
+);
+
+server.tool(
+  'schedule_run_now',
+  '立即执行一个已有定时任务，并把结果发送到它配置的飞书目标。',
+  {
+    id: z.string().describe('任务 ID'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: await runScheduleNowAction(args.id, { client: getLarkClient() }) }],
+  })
 );
 
 // --- 启动 stdio 传输 ---

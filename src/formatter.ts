@@ -15,6 +15,13 @@ const TOOL_ICONS: Record<string, string> = {
   'send_message_to_user': '💬 发送消息',
   'create_task': '✅ 创建待办',
   'create_calendar_event': '📅 创建日程',
+  'schedule_list': '🗂️ 查看定时',
+  'schedule_create': '⏰ 创建定时',
+  'schedule_update': '🛠️ 修改定时',
+  'schedule_enable': '▶️ 启用定时',
+  'schedule_disable': '⏸️ 停用定时',
+  'schedule_delete': '🗑️ 删除定时',
+  'schedule_run_now': '🚀 立即执行定时',
 };
 
 const SUBAGENT_ICONS: Record<string, string> = {
@@ -88,6 +95,15 @@ function getProgressSummaryFromParsed(toolName: string, parsed: any): string {
   if (toolName === 'create_calendar_event' && parsed.title) {
     return truncateSingleLine(String(parsed.title));
   }
+  if (toolName === 'schedule_create' && parsed.name) {
+    return truncateSingleLine(String(parsed.name));
+  }
+  if (toolName === 'schedule_update' && parsed.id) {
+    return truncateSingleLine(String(parsed.id));
+  }
+  if (['schedule_enable', 'schedule_disable', 'schedule_delete', 'schedule_run_now'].includes(toolName) && parsed.id) {
+    return truncateSingleLine(String(parsed.id));
+  }
 
   for (const key of ['file_path', 'path', 'command', 'query', 'pattern', 'url', 'title', 'name', 'open_id', 'chat_id']) {
     const value = extractScalarValue(parsed?.[key]);
@@ -142,6 +158,32 @@ export function formatToolEnd(toolName: string, input: string): string {
     if (toolName === 'create_calendar_event') {
       const attendeeCount = parsed.attendee_open_ids?.length || 0;
       return `📅 创建日程「${parsed.title}」| ${parsed.start_time} | ${attendeeCount} 位参与者`;
+    }
+    if (toolName === 'schedule_list') {
+      return '🗂️ 查看定时任务列表';
+    }
+    if (toolName === 'schedule_create') {
+      return `⏰ 创建定时「${parsed.name}」| ${parsed.cron}${parsed.target_id ? ` | 目标: ${parsed.target_id}` : ''}`;
+    }
+    if (toolName === 'schedule_update') {
+      const parts = [
+        `🛠️ 修改定时 \`${parsed.id}\``,
+        parsed.cron ? `cron: ${parsed.cron}` : '',
+        parsed.name ? `name: ${parsed.name}` : '',
+      ].filter(Boolean);
+      return parts.join(' | ');
+    }
+    if (toolName === 'schedule_enable') {
+      return `▶️ 启用定时 \`${parsed.id}\``;
+    }
+    if (toolName === 'schedule_disable') {
+      return `⏸️ 停用定时 \`${parsed.id}\``;
+    }
+    if (toolName === 'schedule_delete') {
+      return `🗑️ 删除定时 \`${parsed.id}\``;
+    }
+    if (toolName === 'schedule_run_now') {
+      return `🚀 立即执行定时 \`${parsed.id}\``;
     }
     if (toolName === 'Reasoning' && parsed.reasoning) {
       const text = parsed.reasoning.length > 200

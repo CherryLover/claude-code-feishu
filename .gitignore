@@ -6,3 +6,6 @@ log/
 *.js.map
 *.d.ts
 !src/**/*.d.ts
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal

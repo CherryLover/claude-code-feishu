@@ -4,10 +4,20 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
-import { streamChat, getProviderName } from './provider.js';
-import { buildFeishuCard, buildProgressCardContent, formatProgressCurrent } from './formatter.js';
+import { getProviderName } from './provider.js';
 import { MessageDedup } from './dedup.js';
-import { InputImage, UsageInfo } from './types.js';
+import { InputImage } from './types.js';
+import {
+  addAckReaction,
+  formatUsageInfo,
+  sendCard,
+  sendReplyText,
+  sendTextMessage,
+  updateCard,
+} from './feishu-messages.js';
+import { executeTask } from './task-executor.js';
+import { createTaskProgressState, renderTaskProgressMarkdown } from './task-progress.js';
+import { startSchedulerService } from './scheduler/service.js';
 
 interface LarkErrorLike {
   message?: string;
@@ -106,8 +116,6 @@ const abortReasons = new Map<string, 'user' | 'timeout'>(); // chatId -> reason
 // 存储卡片消息对应的原始文本（用于「复制原文」按钮回调）
 const cardRawContent = new Map<string, string>(); // messageId -> rawContent
 
-// 模块级 client，供启动通知使用
-let feishuClient: Lark.Client | null = null;
 // 机器人自身的 open_id，用于群聊中判断是否 @了自己
 let botOpenId: string | null = null;
 
@@ -117,7 +125,6 @@ let eventDispatcherRef: Lark.EventDispatcher | null = null;
 const WS_REFRESH_INTERVAL = 30 * 60 * 1000; // 每 30 分钟刷新一次连接
 const senderNameCache = new Map<string, string>(); // openId -> 发送者姓名
 const DEFAULT_CHAT_TURN_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟
-const MAX_REPLY_TEXT_LENGTH = 6000;
 const PROJECT_WORKSPACE_ROOT = path.join(PROJECT_ROOT, 'workspace');
 const PRIVATE_WORKSPACE_PREFIX = 'user_';
 const SHARED_WORKSPACE_DIR = path.join(PROJECT_WORKSPACE_ROOT, 'shared');
@@ -126,15 +133,6 @@ interface DownloadedImageInput {
   filePath: string;
   mimeType?: string;
   tempDir: string;
-}
-
-interface ProgressCardState {
-  current: string;
-  toolCallCount: number;
-  reasoningCount: number;
-  startedAt: number;
-  answerPhaseStarted: boolean;
-  usageInfo?: UsageInfo;
 }
 
 function getChatTurnTimeoutMs(): number {
@@ -284,188 +282,6 @@ function refreshWsClient() {
   console.log('[WS刷新] 新连接已建立');
 }
 
-
-function isReplyMarkdownMode(): boolean {
-  return config.feishuReplyFormat === 'md';
-}
-
-function trimReplyText(content: string): string {
-  const normalized = content.replace(/\r\n/g, '\n').trim();
-  if (!normalized) return '（空内容）';
-  if (normalized.length <= MAX_REPLY_TEXT_LENGTH) return normalized;
-  const remain = normalized.length - MAX_REPLY_TEXT_LENGTH;
-  return `${normalized.slice(0, MAX_REPLY_TEXT_LENGTH)}\n...(已截断 ${remain} 字符)`;
-}
-
-function stripReplyMarkdown(content: string): string {
-  return content
-    .replace(/\*\*/g, '')
-    .replace(/```[a-zA-Z0-9_-]*\n?/g, '')
-    .replace(/```/g, '')
-    .trim();
-}
-
-function formatReplyText(content: string): string {
-  const normalized = content.replace(/\r\n/g, '\n').trim();
-  if (!normalized) return '';
-
-  if (isReplyMarkdownMode()) {
-    return trimReplyText(normalized);
-  }
-
-  const plain = stripReplyMarkdown(normalized);
-  if (!plain) return '';
-  return trimReplyText(plain);
-}
-
-function buildReplyMarkdownPostContent(content: string): string {
-  const markdown = trimReplyText(content);
-  return JSON.stringify({
-    zh_cn: {
-      content: [
-        [
-          {
-            tag: 'md',
-            text: markdown,
-          },
-        ],
-      ],
-    },
-  });
-}
-
-async function sendPlainTextMessage(
-  client: Lark.Client,
-  receiveIdType: 'chat_id' | 'open_id',
-  receiveId: string,
-  content: string,
-): Promise<string | null> {
-  try {
-    const resp = await client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: {
-        receive_id: receiveId,
-        msg_type: 'text',
-        content: JSON.stringify({ text: trimReplyText(content) }),
-      },
-    });
-    const messageId = resp.data?.message_id;
-    console.log(`[飞书] 文本消息发送成功, message_id: ${messageId}`);
-    return messageId || null;
-  } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : '未知错误';
-    console.error(`[飞书] 文本消息发送失败: ${errMsg}`);
-    return null;
-  }
-}
-
-async function sendMarkdownMessage(
-  client: Lark.Client,
-  receiveIdType: 'chat_id' | 'open_id',
-  receiveId: string,
-  content: string,
-): Promise<string | null> {
-  try {
-    const resp = await client.im.message.create({
-      params: { receive_id_type: receiveIdType },
-      data: {
-        receive_id: receiveId,
-        msg_type: 'post',
-        content: buildReplyMarkdownPostContent(content),
-      },
-    });
-    const messageId = resp.data?.message_id;
-    console.log(`[飞书] Markdown 富文本消息发送成功, message_id: ${messageId}`);
-    return messageId || null;
-  } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : '未知错误';
-    console.error(`[飞书] Markdown 富文本消息发送失败: ${errMsg}`);
-    return null;
-  }
-}
-
-async function sendTextMessage(
-  client: Lark.Client,
-  receiveIdType: 'chat_id' | 'open_id',
-  receiveId: string,
-  content: string,
-): Promise<string | null> {
-  if (isReplyMarkdownMode()) {
-    const messageId = await sendMarkdownMessage(client, receiveIdType, receiveId, content);
-    if (messageId) return messageId;
-    console.warn('[飞书] Markdown 消息发送失败，回退为纯文本');
-  }
-
-  return sendPlainTextMessage(client, receiveIdType, receiveId, content);
-}
-
-async function sendPlainReplyText(client: Lark.Client, messageId: string, content: string): Promise<string | null> {
-  try {
-    const resp = await client.im.message.reply({
-      path: { message_id: messageId },
-      data: {
-        msg_type: 'text',
-        content: JSON.stringify({ text: trimReplyText(content) }),
-        reply_in_thread: false,
-      },
-    });
-    const replyMessageId = resp.data?.message_id;
-    console.log(`[飞书] 回复消息发送成功, message_id: ${replyMessageId}`);
-    return replyMessageId || null;
-  } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : '未知错误';
-    console.error(`[飞书] 回复消息发送失败: ${errMsg}`);
-    return null;
-  }
-}
-
-async function sendMarkdownReply(client: Lark.Client, messageId: string, content: string): Promise<string | null> {
-  try {
-    const resp = await client.im.message.reply({
-      path: { message_id: messageId },
-      data: {
-        msg_type: 'post',
-        content: buildReplyMarkdownPostContent(content),
-        reply_in_thread: false,
-      },
-    });
-    const replyMessageId = resp.data?.message_id;
-    console.log(`[飞书] Markdown 富文本回复发送成功, message_id: ${replyMessageId}`);
-    return replyMessageId || null;
-  } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : '未知错误';
-    console.error(`[飞书] Markdown 富文本回复发送失败: ${errMsg}`);
-    return null;
-  }
-}
-
-async function sendReplyText(client: Lark.Client, messageId: string, content: string): Promise<string | null> {
-  if (isReplyMarkdownMode()) {
-    const replyMessageId = await sendMarkdownReply(client, messageId, content);
-    if (replyMessageId) return replyMessageId;
-    console.warn('[飞书] Markdown 回复失败，回退为纯文本回复');
-  }
-
-  return sendPlainReplyText(client, messageId, content);
-}
-
-async function addAckReaction(client: Lark.Client, messageId: string): Promise<void> {
-  if (!config.feishuReplyAckReaction) return;
-
-  try {
-    await client.im.messageReaction.create({
-      path: { message_id: messageId },
-      data: {
-        reaction_type: { emoji_type: config.feishuReplyAckEmoji },
-      },
-    });
-    console.log(`[飞书] 已添加消息 reaction: ${config.feishuReplyAckEmoji} | message_id: ${messageId}`);
-  } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : '未知错误';
-    console.warn(`[飞书] 添加消息 reaction 失败: ${errMsg}`);
-  }
-}
-
 async function sendResponseForIncoming(
   client: Lark.Client,
   _chatId: string,
@@ -476,37 +292,18 @@ async function sendResponseForIncoming(
   return sendReplyText(client, incomingMessageId, content);
 }
 
-function createProgressCardState(current = '准备中'): ProgressCardState {
-  return {
-    current,
-    toolCallCount: 0,
-    reasoningCount: 0,
-    startedAt: Date.now(),
-    answerPhaseStarted: false,
-  };
-}
-
-function getProgressCardMarkdown(state: ProgressCardState): string {
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - state.startedAt) / 1000));
-  let content = buildProgressCardContent(
-    state.current,
-    state.toolCallCount,
-    state.reasoningCount,
-    elapsedSeconds,
-  );
-  if (config.feishuReplyShowUsage && state.usageInfo) {
-    content += formatUsageInfo(state.usageInfo);
-  }
-  return content;
-}
-
 async function syncProgressCard(
   client: Lark.Client,
   messageId: string,
   title: string,
-  state: ProgressCardState,
+  state: ReturnType<typeof createTaskProgressState>,
 ): Promise<void> {
-  await updateCard(client, messageId, title, getProgressCardMarkdown(state));
+  await updateCard(
+    client,
+    messageId,
+    title,
+    renderTaskProgressMarkdown(state, config.feishuReplyShowUsage),
+  );
 }
 
 export function startFeishuBot() {
@@ -535,7 +332,6 @@ export function startFeishuBot() {
     loggerLevel: Lark.LoggerLevel.error,
     logger: larkLogger,
   });
-  feishuClient = client;
 
   const wsClient = new Lark.WSClient({
     appId: config.feishuAppId,
@@ -672,6 +468,13 @@ export function startFeishuBot() {
 
   console.log('飞书机器人已启动（WebSocket 长连接）');
 
+  if (config.schedulerEnabled) {
+    startSchedulerService(client);
+    console.log(`[Scheduler] 已启动 | DB: ${config.schedulerDbPath}`);
+  } else {
+    console.log('[Scheduler] 未启用');
+  }
+
   // 发送启动通知
   if (config.notifyUserId) {
     // 延迟 2 秒等待 WebSocket 连接建立
@@ -780,7 +583,7 @@ async function handleMessage(client: Lark.Client, data: any) {
     console.log(`[跳过] 聊天 ${chatId} 正在处理中`);
     pendingMessages.set(chatId, data);
 
-    const waitCardState = createProgressCardState('等待前一条任务完成');
+    const waitCardState = createTaskProgressState('等待前一条任务完成');
     let queuedCardMessageId = queuedCardMessageIds.get(chatId) || null;
 
     if (queuedCardMessageId) {
@@ -788,9 +591,10 @@ async function handleMessage(client: Lark.Client, data: any) {
     } else {
       const waitCardMessageId = await sendCard(
         client,
+        'chat_id',
         chatId,
         providerName,
-        getProgressCardMarkdown(waitCardState),
+        renderTaskProgressMarkdown(waitCardState, config.feishuReplyShowUsage),
       );
       if (waitCardMessageId) {
         queuedCardMessageIds.set(chatId, waitCardMessageId);
@@ -959,34 +763,10 @@ async function handleMessage(client: Lark.Client, data: any) {
   abortControllers.set(chatId, abortController);
   abortReasons.delete(chatId);
   const sessionId = sessions.get(chatId) || null;
-  let resultContent = '';
-  let usageInfo: UsageInfo | undefined;
-  let finalStatusMessage: string | null = null;
   const chatTurnTimeoutMs = getChatTurnTimeoutMs();
   const chatTurnTimeoutSec = Math.ceil(chatTurnTimeoutMs / 1000);
-  const progressState = createProgressCardState();
+  const progressState = createTaskProgressState();
   let progressCardMessageId: string | null = null;
-
-  let timeoutTimer: NodeJS.Timeout | null = null;
-  const resetTurnTimeout = () => {
-    if (timeoutTimer) {
-      clearTimeout(timeoutTimer);
-    }
-
-    timeoutTimer = setTimeout(() => {
-      if (!abortController.signal.aborted) {
-        abortReasons.set(chatId, 'timeout');
-        abortController.abort();
-        logFeishuRuntime('message.handle.timeout.abort', {
-          chatId,
-          messageId: incomingMessageId,
-          timeoutMs: chatTurnTimeoutMs,
-        });
-      }
-    }, chatTurnTimeoutMs);
-  };
-
-  resetTurnTimeout();
 
   try {
     progressCardMessageId = queuedCardMessageIds.get(chatId) || null;
@@ -997,9 +777,10 @@ async function handleMessage(client: Lark.Client, data: any) {
     } else {
       progressCardMessageId = await sendCard(
         client,
+        'chat_id',
         chatId,
         providerName,
-        getProgressCardMarkdown(progressState),
+        renderTaskProgressMarkdown(progressState, config.feishuReplyShowUsage),
       );
     }
 
@@ -1009,116 +790,73 @@ async function handleMessage(client: Lark.Client, data: any) {
       progressCardMessageId,
     });
 
-    const stream = streamChat(text, sessionId, {
+    const result = await executeTask({
+      prompt: text,
+      sessionId,
+      timeoutMs: chatTurnTimeoutMs,
       abortSignal: abortController.signal,
+      externalAbortReason: () => (abortReasons.get(chatId) === 'user' ? 'user' : 'external'),
       feishuClient: client,
       chatId,
       senderOpenId,
       senderName,
       inputImages,
       workingDirectory,
+      onProgress: async (state, event) => {
+        switch (event.type) {
+          case 'tool_start':
+            console.log(`[${providerName}] 工具调用: ${event.toolName || '工具'}`);
+            break;
+          case 'tool_end':
+            console.log(`[${providerName}] 工具输入: ${event.toolInput?.slice(0, 100) || ''}...`);
+            break;
+          case 'tool_result':
+            console.log(`[${providerName}] 工具结果: ${event.toolOutput?.slice(0, 100) || ''}...`);
+            break;
+          case 'result':
+            console.log(`[${providerName}] 处理完成`);
+            break;
+          case 'error':
+            console.log(`[${providerName}] 错误: ${event.content || '未知错误'}`);
+            break;
+          default:
+            break;
+        }
+
+        if (progressCardMessageId) {
+          await syncProgressCard(client, progressCardMessageId, providerName, state);
+        }
+      },
     });
 
-    for await (const event of stream) {
-      const shouldRefreshTimeout = event.type === 'text'
-        || event.type === 'result'
-        || event.type === 'tool_start'
-        || event.type === 'tool_end'
-        || event.type === 'tool_result';
-      if (shouldRefreshTimeout) {
-        resetTurnTimeout();
-      }
-
-      if (abortController.signal.aborted) {
-        const reason = abortReasons.get(chatId);
-        if (reason === 'timeout') {
-          console.log(`[${providerName}] 超时中断处理`);
-          finalStatusMessage = `⏱️ 执行超时（>${chatTurnTimeoutSec}s），已自动停止。`;
-          progressState.current = '执行超时';
-        } else {
-          console.log(`[${providerName}] 用户中断处理`);
-          finalStatusMessage = '⏹️ 已被用户停止';
-          progressState.current = '已停止';
-        }
-        if (progressCardMessageId) {
-          await syncProgressCard(client, progressCardMessageId, providerName, progressState);
-        }
-        break;
-      }
-
-      switch (event.type) {
-        case 'tool_start': {
-          const toolName = event.toolName || '工具';
-          console.log(`[${providerName}] 工具调用: ${toolName}`);
-          if (toolName === 'Reasoning') {
-            progressState.reasoningCount += 1;
-            progressState.current = '思考中';
-          } else {
-            progressState.toolCallCount += 1;
-            progressState.current = formatProgressCurrent(toolName);
-          }
-          if (progressCardMessageId) {
-            await syncProgressCard(client, progressCardMessageId, providerName, progressState);
-          }
-          break;
-        }
-        case 'tool_end': {
-          const toolName = event.toolName || '工具';
-          console.log(`[${providerName}] 工具输入: ${event.toolInput?.slice(0, 100)}...`);
-          progressState.current = formatProgressCurrent(toolName, event.toolInput || '');
-          if (progressCardMessageId) {
-            await syncProgressCard(client, progressCardMessageId, providerName, progressState);
-          }
-          break;
-        }
-        case 'tool_result':
-          console.log(`[${providerName}] 工具结果: ${event.toolOutput?.slice(0, 100)}...`);
-          if (progressCardMessageId) {
-            await syncProgressCard(client, progressCardMessageId, providerName, progressState);
-          }
-          break;
-        case 'text':
-          if (!progressState.answerPhaseStarted) {
-            progressState.answerPhaseStarted = true;
-            progressState.current = '整理答案';
-            if (progressCardMessageId) {
-              await syncProgressCard(client, progressCardMessageId, providerName, progressState);
-            }
-          }
-          break;
-        case 'result':
-          console.log(`[${providerName}] 处理完成`);
-          if (event.sessionId) {
-            sessions.set(chatId, event.sessionId);
-          }
-          if (event.content) {
-            resultContent = event.content;
-          }
-          usageInfo = event.usage;
-          progressState.usageInfo = event.usage;
-          progressState.current = '输出完成';
-          if (progressCardMessageId) {
-            await syncProgressCard(client, progressCardMessageId, providerName, progressState);
-          }
-          break;
-        case 'error':
-          console.log(`[${providerName}] 错误: ${event.content}`);
-          finalStatusMessage = `❌ 错误：${event.content || '未知错误'}`;
-          progressState.current = '执行出错';
-          if (progressCardMessageId) {
-            await syncProgressCard(client, progressCardMessageId, providerName, progressState);
-          }
-          break;
-      }
+    if (result.sessionId) {
+      sessions.set(chatId, result.sessionId);
     }
 
-    let finalReplyText = resultContent.trim();
+    let finalReplyText = result.content.trim();
     if (!finalReplyText) {
-      finalReplyText = finalStatusMessage || '（无响应）';
+      if (result.status === 'aborted') {
+        if (result.abortReason === 'timeout') {
+          logFeishuRuntime('message.handle.timeout.abort', {
+            chatId,
+            messageId: incomingMessageId,
+            timeoutMs: chatTurnTimeoutMs,
+          });
+          finalReplyText = `⏱️ 执行超时（>${chatTurnTimeoutSec}s），已自动停止。`;
+        } else {
+          finalReplyText = '⏹️ 已被用户停止';
+        }
+      } else if (result.status === 'error') {
+        finalReplyText = `❌ 错误：${result.errorMessage || '未知错误'}`;
+      } else {
+        finalReplyText = '（无响应）';
+      }
     }
-    if (!progressCardMessageId && usageInfo && config.feishuReplyShowUsage) {
-      finalReplyText += formatUsageInfo(usageInfo);
+
+    if (!progressCardMessageId && result.usageInfo && config.feishuReplyShowUsage) {
+      finalReplyText += formatUsageInfo(result.usageInfo);
     }
+
     await sendReplyText(client, incomingMessageId, finalReplyText);
 
     logFeishuRuntime('message.handle.done', {
@@ -1127,34 +865,28 @@ async function handleMessage(client: Lark.Client, data: any) {
       chatId,
       responseMessageId: incomingMessageId,
       progressCardMessageId,
-      hasResult: Boolean(resultContent),
-      toolCallCount: progressState.toolCallCount,
-      reasoningCount: progressState.reasoningCount,
+      status: result.status,
+      abortReason: result.abortReason || null,
+      hasResult: Boolean(result.content),
+      toolCallCount: result.progress.toolCallCount,
+      reasoningCount: result.progress.reasoningCount,
     });
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
-    const abortReason = abortReasons.get(chatId);
-    const timeoutErrMsg = `执行超时（>${chatTurnTimeoutSec}s），已自动停止。你可以直接重试，或发送 /status 查看当前状态。`;
-    const finalErrMsg = abortReason === 'timeout' ? timeoutErrMsg : errMsg;
     console.error(`[错误] ${providerName} 处理失败: ${errMsg}`);
     logFeishuRuntime('message.handle.error', {
       instance: INSTANCE_TAG,
       messageId: incomingMessageId,
       chatId,
-      error: finalErrMsg,
-      rawError: errMsg,
-      abortReason: abortReason || null,
+      error: errMsg,
     });
 
-    progressState.current = abortReason === 'timeout' ? '执行超时' : '执行出错';
+    progressState.current = '执行出错';
     if (progressCardMessageId) {
       await syncProgressCard(client, progressCardMessageId, providerName, progressState);
     }
-    await sendReplyText(client, incomingMessageId, `❌ 错误: ${finalErrMsg}`);
+    await sendReplyText(client, incomingMessageId, `❌ 错误: ${errMsg}`);
   } finally {
-    if (timeoutTimer) {
-      clearTimeout(timeoutTimer);
-    }
     processing.delete(chatId);
     abortControllers.delete(chatId);
     abortReasons.delete(chatId);
@@ -1176,61 +908,5 @@ async function handleMessage(client: Lark.Client, data: any) {
     if (downloadedImageInputs.length > 0) {
       cleanupDownloadedImages(downloadedImageInputs);
     }
-  }
-}
-
-async function sendCard(client: Lark.Client, chatId: string, title: string, content: string): Promise<string | null> {
-  try {
-    const resp = await client.im.message.create({
-      params: { receive_id_type: 'chat_id' },
-      data: {
-        receive_id: chatId,
-        msg_type: 'interactive',
-        content: buildFeishuCard(title, content),
-      },
-    });
-    const messageId = resp.data?.message_id;
-    console.log(`[飞书] 消息发送成功, message_id: ${messageId}`);
-    return messageId || null;
-  } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : '未知错误';
-    console.error(`[飞书] 消息发送失败: ${errMsg}`);
-    return null;
-  }
-}
-
-function formatUsageInfo(usage: UsageInfo): string {
-  const used = usage.inputTokens + usage.outputTokens;
-  const formatTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
-
-  if (usage.contextWindow) {
-    const remaining = usage.contextWindow - used;
-    const percent = ((remaining / usage.contextWindow) * 100).toFixed(0);
-    let info = `\n\n---\n📊 上下文: ${formatTokens(used)} / ${formatTokens(usage.contextWindow)} tokens (剩余 ${percent}%)`;
-    if (usage.costUSD != null) {
-      info += ` | 费用: $${usage.costUSD.toFixed(4)}`;
-    }
-    return info;
-  }
-
-  let info = `\n\n---\n📊 Tokens: ${formatTokens(used)} (输入: ${formatTokens(usage.inputTokens)}, 输出: ${formatTokens(usage.outputTokens)})`;
-  if (usage.costUSD != null) {
-    info += ` | 费用: $${usage.costUSD.toFixed(4)}`;
-  }
-  return info;
-}
-
-async function updateCard(client: Lark.Client, messageId: string, title: string, content: string, copyContent?: string) {
-  try {
-    await client.im.message.patch({
-      path: { message_id: messageId },
-      data: {
-        content: buildFeishuCard(title, content, copyContent),
-      },
-    });
-    console.log(`[飞书] 卡片更新成功`);
-  } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : '未知错误';
-    console.error(`[飞书] 卡片更新失败: ${errMsg}`);
   }
 }

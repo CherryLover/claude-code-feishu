@@ -12,6 +12,9 @@ services:
       - FEISHU_APP_ID=${CLAUDE_FEISHU_APP_ID}
       - FEISHU_APP_SECRET=${CLAUDE_FEISHU_APP_SECRET}
       - NOTIFY_USER_ID=${CLAUDE_NOTIFY_USER_ID:-}
+      - SCHEDULER_ENABLED=${CLAUDE_SCHEDULER_ENABLED:-false}
+      - SCHEDULER_DB_PATH=${CLAUDE_SCHEDULER_DB_PATH:-/workspace/.scheduler/claude.sqlite}
+      - SCHEDULER_TASK_TIMEOUT_MS=${CLAUDE_SCHEDULER_TASK_TIMEOUT_MS:-600000}
     volumes:
       - /home/jiangjiwei/Code/my-project:/workspace
 
@@ -28,5 +31,8 @@ services:
       - FEISHU_APP_ID=${CODEX_FEISHU_APP_ID}
       - FEISHU_APP_SECRET=${CODEX_FEISHU_APP_SECRET}
       - NOTIFY_USER_ID=${CODEX_NOTIFY_USER_ID:-}
+      - SCHEDULER_ENABLED=${CODEX_SCHEDULER_ENABLED:-false}
+      - SCHEDULER_DB_PATH=${CODEX_SCHEDULER_DB_PATH:-/workspace/.scheduler/codex.sqlite}
+      - SCHEDULER_TASK_TIMEOUT_MS=${CODEX_SCHEDULER_TASK_TIMEOUT_MS:-600000}
     volumes:
       - /home/jiangjiwei/Code/my-project:/workspace

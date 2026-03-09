@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
-dotenv.config({ override: true });
+import path from 'path';
+dotenv.config({ override: true, quiet: true });
 
 export type FeishuReplyFormat = 'text' | 'md';
 
@@ -15,6 +16,18 @@ function parseFeishuReplyFormat(value: string | undefined): FeishuReplyFormat {
   if (!value) return 'md';
   const normalized = value.trim().toLowerCase();
   return normalized === 'text' ? 'text' : 'md';
+}
+
+function parseNumber(value: string | undefined, defaultValue: number): number {
+  if (!value) return defaultValue;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return defaultValue;
+  return Math.floor(parsed);
+}
+
+function resolvePath(value: string | undefined, defaultValue: string): string {
+  if (!value) return defaultValue;
+  return path.resolve(value);
 }
 
 export const config = {
@@ -47,6 +60,11 @@ export const config = {
 
   // 工作目录
   workspace: process.env.WORKSPACE || '/workspace',
+
+  // 定时任务（SQLite + 单实例调度）
+  schedulerEnabled: parseBoolean(process.env.SCHEDULER_ENABLED, false),
+  schedulerDbPath: resolvePath(process.env.SCHEDULER_DB_PATH, path.resolve(process.cwd(), 'data', 'scheduler.sqlite')),
+  schedulerTaskTimeoutMs: parseNumber(process.env.SCHEDULER_TASK_TIMEOUT_MS, 10 * 60 * 1000),
 };
 
 export function validateConfig() {

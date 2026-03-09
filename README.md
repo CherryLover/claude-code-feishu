@@ -19,6 +19,7 @@
 - **消息回执** — 收到消息后可给用户原消息添加 reaction，表示已收到并开始处理
 - **并发控制** — 同一聊天同时只处理一条消息，避免混乱
 - **消息去重** — 5 分钟 TTL，防止超时重推导致重复处理
+- **定时任务** — 基于 SQLite 持久化 cron 配置，定时执行 AI 任务并主动推送飞书报告
 - **多实例部署** — Docker Compose 支持多个机器人实例，各自独立配置
 
 ## 快速开始
@@ -84,6 +85,9 @@ npm run dev
 | `FEISHU_APP_ID` | 是 | 飞书应用 ID |
 | `FEISHU_APP_SECRET` | 是 | 飞书应用密钥 |
 | `WORKSPACE` | 否 | Provider 备用工作目录，默认 `/workspace`；私聊默认使用 `<项目目录>/workspace/user_<open_id>` |
+| `SCHEDULER_ENABLED` | 否 | 是否启用定时任务调度，默认 `false` |
+| `SCHEDULER_DB_PATH` | 否 | SQLite 文件路径，默认 `<项目目录>/data/scheduler.sqlite` |
+| `SCHEDULER_TASK_TIMEOUT_MS` | 否 | 定时任务单次执行超时，默认 `600000`（10 分钟） |
 | `DEVELOPER_OPEN_ID` | 否 | 开发者自己的飞书 `open_id`；私聊命中后优先使用 `DEVELOPER_WORKSPACE` |
 | `DEVELOPER_WORKSPACE` | 否 | 开发者私聊命中时使用的本机目录；默认当前系统用户目录 |
 | `NOTIFY_USER_ID` | 否 | 启动时通知的用户 ID（open_id 或 chat_id） |
@@ -139,6 +143,65 @@ docker compose up -d
 
 这些命令同时支持飞书自定义菜单触发。
 
+### 定时任务
+
+当前定时任务按 **单实例 + SQLite** 设计。启用方式：
+
+```bash
+export SCHEDULER_ENABLED=true
+```
+
+启用后，除了本地 CLI，你也可以直接在飞书里让 AI 管理定时任务，例如：
+
+```text
+每天工作日早上 9 点半，检查 workspace/shared 里的 git 变更，然后把日报发到当前群
+把刚才那个日报改成每天 10 点
+先暂停这个日报
+看看我现在有哪些定时任务
+立即执行一次日报
+```
+
+AI 会优先调用内置的 `schedule_*` 工具，把任务写入 SQLite，并由运行中的调度器自动同步生效。
+
+任务通过本地 CLI 管理：
+
+```bash
+# 查看任务
+npm run schedule -- list
+
+# 新增任务
+npm run schedule -- add \
+  --id daily-report \
+  --name "Daily Report" \
+  --cron "0 30 9 * * 1-5" \
+  --target-type chat_id \
+  --target-id oc_xxx \
+  --working-directory ./workspace/shared \
+  --prompt "请总结工作目录昨天的变更，并输出日报"
+
+# 修改任务
+npm run schedule -- update \
+  --id daily-report \
+  --cron "0 0 10 * * 1-5"
+
+# 启用 / 停用
+npm run schedule -- enable --id daily-report
+npm run schedule -- disable --id daily-report
+
+# 手动执行一次
+npm run schedule -- run --id daily-report
+
+# 查看执行记录
+npm run schedule -- runs --id daily-report
+```
+
+说明：
+
+- 定时任务结果会主动发送到配置的 `chat_id` 或 `open_id`
+- 定时任务默认独立执行，不复用聊天会话上下文
+- 当前实现不处理多实例重复触发
+- SQLite 会保存任务配置和执行历史
+
 ### 消息展示方式
 
 机器人固定采用统一流程：
@@ -172,9 +235,19 @@ src/
 ├── claude.ts           # Claude Agent SDK 封装，流式事件处理
 ├── codex-provider.ts   # Codex SDK 封装，流式事件处理
 ├── feishu.ts           # 飞书 WebSocket 连接、消息分发、会话管理
+├── feishu-messages.ts  # 飞书消息发送/卡片更新公共函数
 ├── formatter.ts        # 工具调用格式化、飞书卡片构建
+├── scheduler-cli.ts    # 本地定时任务管理 CLI
+├── task-executor.ts    # AI 执行公共入口（手动消息 / 定时任务复用）
+├── task-progress.ts    # 执行进度状态与卡片渲染
 ├── tools.ts            # 自定义 MCP 工具（文件发送）
 └── file-utils.ts       # 文件类型识别工具
+
+src/scheduler/
+├── db.ts               # SQLite 建表与 CRUD
+├── runner.ts           # 定时任务执行与飞书报告推送
+├── service.ts          # cron 注册与运行时调度
+└── types.ts            # 定时任务类型定义
 ```
 
 ## 架构
@@ -202,6 +275,7 @@ src/
 npm run dev      # 开发运行（tsx 热重载）
 npm run build    # 编译 TypeScript
 npm run start    # 运行编译产物
+npm run schedule -- list   # 查看定时任务
 ```
 
 ## License
