@@ -64,3 +64,16 @@
   - `README.md`
   - `doc/multi-user.md`
 - **经验教训**: 用户级工作目录策略里如果存在开发者调试诉求，最好预留显式 override，而不是把个人特例硬编码进默认目录规则。
+
+## 统一飞书输出为进度卡加最终 reply
+- **日期**: 2026-03-09
+- **标签**: feishu, ui, reply, card, feature
+- **问题**: reply 模式会把思考、工具调用、输入、结果逐条刷成聊天消息，过程噪音太大；而旧 card 模式又会把完整过程堆进卡片里，信息过多。
+- **解决方案**: 删除输出模式分叉，固定采用 reaction + 进度卡 + 最终 reply 的统一流程。进度卡仅显示当前执行项、工具调用次数、思考次数和耗时；工具摘要使用 formatter.ts 中的新格式化逻辑，按 tool_start/tool_end/tool_result 更新，text 事件只在首次进入答案阶段时切换为“整理答案”。最终正文仍以 reply 发回原消息。
+- **相关文件**:
+  - `src/config.ts`
+  - `src/formatter.ts`
+  - `src/feishu.ts`
+  - `README.md`
+  - `.env.example`
+- **经验教训**: 飞书里的过程展示更适合用一张轻量状态卡持续 patch，而不是把每个中间事件都当聊天消息发送；过程摘要和最终正文应分层展示。

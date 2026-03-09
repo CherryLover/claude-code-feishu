@@ -15,8 +15,8 @@
 - **私聊目录隔离** — 私聊按用户 `open_id` 自动使用独立工作目录（`<项目目录>/workspace/user_<open_id>`）
 - **富文本支持** — 支持飞书纯文本和富文本（Post）消息类型
 - **文件发送** — AI 可直接通过飞书发送文件给用户（图片、文档、音频等）
-- **双输出模式** — 支持 `card`（单卡片实时更新）与 `reply`（针对用户消息逐条回复）
-- **消息回执** — reply 模式可给用户原消息添加 reaction，表示已收到并开始处理
+- **进度卡 + 最终回复** — 固定使用单张进度卡展示当前执行项与计数，最终结果回复到用户原消息下
+- **消息回执** — 收到消息后可给用户原消息添加 reaction，表示已收到并开始处理
 - **并发控制** — 同一聊天同时只处理一条消息，避免混乱
 - **消息去重** — 5 分钟 TTL，防止超时重推导致重复处理
 - **多实例部署** — Docker Compose 支持多个机器人实例，各自独立配置
@@ -87,15 +87,10 @@ npm run dev
 | `DEVELOPER_OPEN_ID` | 否 | 开发者自己的飞书 `open_id`；私聊命中后优先使用 `DEVELOPER_WORKSPACE` |
 | `DEVELOPER_WORKSPACE` | 否 | 开发者私聊命中时使用的本机目录；默认当前系统用户目录 |
 | `NOTIFY_USER_ID` | 否 | 启动时通知的用户 ID（open_id 或 chat_id） |
-| `FEISHU_OUTPUT_MODE` | 否 | 输出模式：`reply`（默认）或 `card` |
-| `FEISHU_REPLY_FORMAT` | 否 | reply 模式消息格式：`md`（默认）或 `text` |
-| `FEISHU_REPLY_SHOW_TOOL_CALLS` | 否 | reply 模式是否展示工具调用 |
-| `FEISHU_REPLY_SHOW_TOOL_INPUT` | 否 | reply 模式是否展示工具输入 |
-| `FEISHU_REPLY_SHOW_TOOL_RESULT` | 否 | reply 模式是否展示工具结果 |
-| `FEISHU_REPLY_SHOW_USAGE` | 否 | reply 模式是否展示 Token/费用 |
-| `FEISHU_REPLY_SHOW_QUEUE_NOTICE` | 否 | reply 模式排队时是否提示 |
-| `FEISHU_REPLY_ACK_REACTION` | 否 | reply 模式收到消息后是否添加 reaction |
-| `FEISHU_REPLY_ACK_EMOJI` | 否 | reply 模式 reaction 的 emoji 类型，默认 `OK` |
+| `FEISHU_REPLY_FORMAT` | 否 | 最终 reply 正文格式：`md`（默认）或 `text` |
+| `FEISHU_REPLY_SHOW_USAGE` | 否 | 最终 reply 是否展示 Token/费用 |
+| `FEISHU_REPLY_ACK_REACTION` | 否 | 收到消息后是否给用户原消息添加 reaction |
+| `FEISHU_REPLY_ACK_EMOJI` | 否 | reaction 的 emoji 类型，默认 `OK` |
 
 ## Docker 部署
 
@@ -144,19 +139,24 @@ docker compose up -d
 
 这些命令同时支持飞书自定义菜单触发。
 
-### 消息展示模式
+### 消息展示方式
 
-通过 `FEISHU_OUTPUT_MODE` 配置展示方式：
+机器人固定采用统一流程：
 
-- `reply`（默认）：机器人会始终回复到用户原消息下，形成普通聊天记录
-- `card`：机器人使用单张卡片持续更新过程和最终结果
+1. 给用户原消息添加 reaction 回执
+2. 发送并持续更新一张进度卡
+3. 最终结果使用 `reply` 回复到用户原消息下
 
-reply 模式可通过环境变量控制细节级别：
+进度卡只展示摘要信息：
 
-- `FEISHU_REPLY_FORMAT`：消息格式，`md`（默认，post 富文本 md 节点）或 `text`（纯文本）
-- `FEISHU_REPLY_SHOW_TOOL_CALLS`：是否展示工具调用
-- `FEISHU_REPLY_SHOW_TOOL_INPUT`：是否展示工具输入
-- `FEISHU_REPLY_SHOW_TOOL_RESULT`：是否展示工具结果
+- 当前执行项（工具名 + 简单参数摘要，思考单独显示为“思考中”）
+- 工具调用次数
+- 思考次数
+- 耗时
+
+可通过环境变量控制最终 reply 的展示细节：
+
+- `FEISHU_REPLY_FORMAT`：最终正文格式，`md`（默认，post 富文本 md 节点）或 `text`（纯文本）
 - `FEISHU_REPLY_SHOW_USAGE`：是否展示 Token/费用信息
 - `FEISHU_REPLY_ACK_REACTION`：是否给用户消息添加 reaction 回执
 

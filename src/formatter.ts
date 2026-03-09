@@ -17,21 +17,92 @@ const TOOL_ICONS: Record<string, string> = {
   'create_calendar_event': '📅 创建日程',
 };
 
-export function formatToolStart(toolName: string): string {
-  // Task 工具在 formatToolEnd 中完整输出，这里返回空
-  if (toolName === 'Task') {
-    return '';
-  }
-  return `**${TOOL_ICONS[toolName] || `🔧 ${toolName}`}**`;
-}
-
-// Task 子代理类型图标
 const SUBAGENT_ICONS: Record<string, string> = {
   'Explore': '🔍',
   'Plan': '📋',
   'Bash': '🖥️',
   'general-purpose': '🤖',
 };
+
+function truncateSingleLine(value: string, maxLen = 72): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length > maxLen ? `${normalized.slice(0, maxLen)}...` : normalized;
+}
+
+function normalizeToolName(toolName: string): string {
+  if (toolName.startsWith('MCP:')) {
+    const normalized = toolName.replace(/^MCP:[^/]+\//, '');
+    return normalized || toolName;
+  }
+  return toolName;
+}
+
+function extractScalarValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => extractScalarValue(item)).filter(Boolean).join(', ');
+  }
+  return '';
+}
+
+function getProgressSummaryFromParsed(toolName: string, parsed: any): string {
+  if (toolName === 'Reasoning') {
+    return '思考中';
+  }
+  if (toolName === 'Bash' && parsed.command) {
+    return truncateSingleLine(String(parsed.command).split('\n')[0] || String(parsed.command));
+  }
+  if (['Read', 'Write', 'Edit'].includes(toolName) && parsed.file_path) {
+    return truncateSingleLine(String(parsed.file_path));
+  }
+  if (toolName === 'WebSearch' && parsed.query) {
+    return truncateSingleLine(String(parsed.query));
+  }
+  if (toolName === 'WebFetch' && parsed.url) {
+    return truncateSingleLine(String(parsed.url));
+  }
+  if (toolName === 'Grep' && parsed.pattern) {
+    return truncateSingleLine(String(parsed.pattern));
+  }
+  if (toolName === 'Glob' && parsed.pattern) {
+    return truncateSingleLine(String(parsed.pattern));
+  }
+  if (toolName === 'Task') {
+    const summary = parsed.description || parsed.subagent_type || parsed.prompt;
+    return truncateSingleLine(String(summary || ''));
+  }
+  if (toolName === 'search_user' && parsed.query) {
+    return truncateSingleLine(String(parsed.query));
+  }
+  if (toolName === 'send_message_to_user') {
+    return truncateSingleLine(String(parsed.open_id || parsed.chat_id || parsed.content || ''));
+  }
+  if (toolName === 'send_file_to_user') {
+    return truncateSingleLine(String(parsed.file_path || parsed.open_id || parsed.chat_id || ''));
+  }
+  if (toolName === 'create_task' && parsed.title) {
+    return truncateSingleLine(String(parsed.title));
+  }
+  if (toolName === 'create_calendar_event' && parsed.title) {
+    return truncateSingleLine(String(parsed.title));
+  }
+
+  for (const key of ['file_path', 'path', 'command', 'query', 'pattern', 'url', 'title', 'name', 'open_id', 'chat_id']) {
+    const value = extractScalarValue(parsed?.[key]);
+    if (value) return truncateSingleLine(value);
+  }
+
+  return truncateSingleLine(extractScalarValue(parsed));
+}
+
+export function formatToolStart(toolName: string): string {
+  if (toolName === 'Task') {
+    return '';
+  }
+  return `**${TOOL_ICONS[toolName] || `🔧 ${toolName}`}**`;
+}
 
 export function formatToolEnd(toolName: string, input: string): string {
   try {
@@ -51,7 +122,6 @@ export function formatToolEnd(toolName: string, input: string): string {
     if (toolName === 'Glob' && parsed.pattern) {
       return `📁 \`${parsed.pattern}\``;
     }
-    // 飞书主动交互工具
     if (toolName === 'search_user' && parsed.query) {
       return `🔍 搜索用户「${parsed.query}」`;
     }
@@ -73,14 +143,12 @@ export function formatToolEnd(toolName: string, input: string): string {
       const attendeeCount = parsed.attendee_open_ids?.length || 0;
       return `📅 创建日程「${parsed.title}」| ${parsed.start_time} | ${attendeeCount} 位参与者`;
     }
-    // Reasoning（Codex 思考过程）
     if (toolName === 'Reasoning' && parsed.reasoning) {
       const text = parsed.reasoning.length > 200
         ? parsed.reasoning.slice(0, 200) + '...'
         : parsed.reasoning;
       return text;
     }
-    // Task 工具特殊处理：🤖 Explore（描述）+ prompt
     if (toolName === 'Task' && parsed.subagent_type) {
       const icon = SUBAGENT_ICONS[parsed.subagent_type] || '🤖';
       const desc = parsed.description || '';
@@ -107,8 +175,35 @@ export function formatToolResult(output: string): string {
   return `\`\`\`\n${truncated}\n\`\`\``;
 }
 
+export function formatProgressCurrent(toolName: string, input?: string): string {
+  const normalizedToolName = normalizeToolName(toolName);
+  if (normalizedToolName === 'Reasoning') {
+    return '思考中';
+  }
+
+  const summary = (() => {
+    if (!input) return '';
+    try {
+      const parsed = JSON.parse(input);
+      return getProgressSummaryFromParsed(normalizedToolName, parsed);
+    } catch {
+      return truncateSingleLine(input);
+    }
+  })();
+
+  return summary ? `${normalizedToolName} · ${summary}` : normalizedToolName;
+}
+
+export function buildProgressCardContent(
+  current: string,
+  toolCallCount: number,
+  reasoningCount: number,
+  elapsedSeconds: number,
+): string {
+  return `当前：${current}\n工具调用 ${toolCallCount} 次｜思考 ${reasoningCount} 次｜耗时 ${elapsedSeconds}s`;
+}
+
 export function buildFeishuCard(title: string, content: string, copyContent?: string): string {
-  // 使用卡片 JSON v2 格式，支持更完整的 Markdown 语法（包括表格、标题等）
   const elements: any[] = [
     {
       tag: 'markdown',
@@ -116,7 +211,6 @@ export function buildFeishuCard(title: string, content: string, copyContent?: st
     },
   ];
 
-  // 添加「复制原文」按钮（V2 中按钮直接放在 elements，通过回调发送纯文本）
   if (copyContent) {
     elements.push({
       tag: 'button',

@@ -1,7 +1,6 @@
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
 
-export type FeishuOutputMode = 'card' | 'reply';
 export type FeishuReplyFormat = 'text' | 'md';
 
 function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -10,12 +9,6 @@ function parseBoolean(value: string | undefined, defaultValue: boolean): boolean
   if (['1', 'true', 'yes', 'on', 'y'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'off', 'n'].includes(normalized)) return false;
   return defaultValue;
-}
-
-function parseFeishuOutputMode(value: string | undefined): FeishuOutputMode {
-  if (!value) return 'reply';
-  const normalized = value.trim().toLowerCase();
-  return normalized === 'card' ? 'card' : 'reply';
 }
 
 function parseFeishuReplyFormat(value: string | undefined): FeishuReplyFormat {
@@ -42,20 +35,13 @@ export const config = {
   developerOpenId: process.env.DEVELOPER_OPEN_ID || '',
   developerWorkspace: process.env.DEVELOPER_WORKSPACE || (process.env.HOME || ''),
 
-  // 飞书输出模式：card（单卡片更新）| reply（按消息回复）
-  feishuOutputMode: parseFeishuOutputMode(process.env.FEISHU_OUTPUT_MODE),
-
-  // reply 消息格式：md（默认，post 富文本 md 节点）| text（纯文本）
+  // 最终 reply 消息格式：md（默认，post 富文本 md 节点）| text（纯文本）
   feishuReplyFormat: parseFeishuReplyFormat(process.env.FEISHU_REPLY_FORMAT),
 
-  // reply 模式展示控制
-  feishuReplyShowToolCalls: parseBoolean(process.env.FEISHU_REPLY_SHOW_TOOL_CALLS, true),
-  feishuReplyShowToolInput: parseBoolean(process.env.FEISHU_REPLY_SHOW_TOOL_INPUT, true),
-  feishuReplyShowToolResult: parseBoolean(process.env.FEISHU_REPLY_SHOW_TOOL_RESULT, true),
+  // 最终 reply 是否展示 Token/费用信息
   feishuReplyShowUsage: parseBoolean(process.env.FEISHU_REPLY_SHOW_USAGE, true),
-  feishuReplyShowQueueNotice: parseBoolean(process.env.FEISHU_REPLY_SHOW_QUEUE_NOTICE, true),
 
-  // reply 模式接收确认（给用户消息添加 reaction）
+  // 收到消息后给用户消息添加 reaction
   feishuReplyAckReaction: parseBoolean(process.env.FEISHU_REPLY_ACK_REACTION, true),
   feishuReplyAckEmoji: process.env.FEISHU_REPLY_ACK_EMOJI || 'OK',
 
