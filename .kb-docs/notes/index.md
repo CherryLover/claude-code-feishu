@@ -103,3 +103,13 @@
   - `src/formatter.ts`
   - `README.md`
 - **经验教训**: 当工具执行进程与主服务进程不在同一内存空间时，不要依赖单例刷新运行态；对 SQLite 这类本地持久层，增加轻量轮询同步通常比引入 IPC 更简单稳妥。
+
+## 飞书话题群 post 消息结构与普通群不同
+- **日期**: 2026-03-12
+- **标签**: feishu, topic, post, bug-fix
+- **问题**: 话题模式群里机器人收到的消息虽然 message_type 仍为 post，但 JSON 结构可能直接是 {title, content}，而不是普通富文本常见的 {zh_cn, en_us} 包装；同时群详情接口可能返回 chat_mode=topic，而 group_message_type 为空。
+- **解决方案**: 在 feishu.ts 中增加 extractPostBody/extractPostText，同时兼容直接 body 与 locale 包装结构；话题群判定同时检查 group_message_type===thread 和 chat_mode===topic。
+- **相关文件**:
+  - `src/feishu.ts`
+  - `log/feishu-runtime.log`
+- **经验教训**: 飞书不同群形态的事件载荷不能只按一种 content schema 解析；遇到消息被判空时，优先回查 /open-apis/im/v1/messages/{message_id} 的原始 body.content。

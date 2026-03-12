@@ -101,6 +101,28 @@ async function main() {
     },
   ));
 
+  if (!notifyUserId || !notifyUserId.startsWith('oc_')) {
+    results.push({
+      name: '群信息读取（两人群直连 / 话题群识别）',
+      endpoint: 'GET /open-apis/im/v1/chats/:chat_id',
+      permission: '群详情读取能力',
+      status: 'skip',
+      detail: '未配置 chat_id 格式的 NOTIFY_USER_ID，跳过群信息读取测试',
+    });
+  } else {
+    results.push(await runCheck(
+      '群信息读取（两人群直连 / 话题群识别）',
+      'GET /open-apis/im/v1/chats/:chat_id',
+      '群详情读取能力',
+      async () => {
+        await client.im.chat.get({
+          params: { user_id_type: 'open_id' },
+          path: { chat_id: notifyUserId },
+        });
+      },
+    ));
+  }
+
   results.push(await runCheck(
     '通讯录精确查人（邮箱/手机号）',
     'POST /open-apis/contact/v3/users/batch_get_id',

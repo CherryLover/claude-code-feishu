@@ -128,6 +128,21 @@ const DEFAULT_CHAT_TURN_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟
 const PROJECT_WORKSPACE_ROOT = path.join(PROJECT_ROOT, 'workspace');
 const PRIVATE_WORKSPACE_PREFIX = 'user_';
 const SHARED_WORKSPACE_DIR = path.join(PROJECT_WORKSPACE_ROOT, 'shared');
+const groupChatMetaCache = new Map<string, GroupChatMeta>();
+const GROUP_CHAT_META_TTL_MS = 5 * 60 * 1000;
+const GROUP_CHAT_META_ERROR_TTL_MS = 60 * 1000;
+
+interface GroupChatMeta {
+  fetchedAt: number;
+  expiresAt: number;
+  isTopicGroup: boolean;
+  isBotUserPairGroup: boolean;
+  groupMessageType?: string;
+  chatMode?: string;
+  userCount?: number;
+  botCount?: number;
+  fetchError?: string;
+}
 
 interface DownloadedImageInput {
   filePath: string;
@@ -257,6 +272,143 @@ async function resolveSenderName(client: Lark.Client, openId?: string): Promise<
   return undefined;
 }
 
+function parseCount(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.floor(parsed));
+    }
+  }
+
+  return undefined;
+}
+
+function isMessageMentioningBot(message: any): boolean {
+  const mentions = message?.mentions;
+  if (!Array.isArray(mentions) || mentions.length === 0) return false;
+
+  if (!botOpenId) return true;
+  return mentions.some((mention: any) => mention.id?.open_id === botOpenId);
+}
+
+function extractPostBody(parsed: any): { title?: string; content?: any[] } | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  if (Array.isArray(parsed.content)) {
+    return parsed;
+  }
+
+  const localePayload = parsed.zh_cn || parsed.en_us;
+  if (localePayload && typeof localePayload === 'object' && Array.isArray(localePayload.content)) {
+    return localePayload;
+  }
+
+  const firstObjectValue = Object.values(parsed).find((value) => (
+    value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Array.isArray((value as any).content)
+  )) as { title?: string; content?: any[] } | undefined;
+
+  return firstObjectValue || null;
+}
+
+function extractPostText(parsed: any): string {
+  const post = extractPostBody(parsed);
+  if (!post?.content) return '';
+
+  const parts: string[] = [];
+  if (typeof post.title === 'string' && post.title.trim()) {
+    parts.push(post.title.trim());
+  }
+
+  for (const line of post.content) {
+    if (!Array.isArray(line)) continue;
+
+    const lineText = line
+      .filter((el: any) => {
+        const tag = typeof el?.tag === 'string' ? el.tag : '';
+        return tag === 'text' || tag === 'a' || tag === 'at';
+      })
+      .map((el: any) => {
+        if (typeof el?.text === 'string') return el.text;
+        if (typeof el?.name === 'string') return `@${el.name}`;
+        return '';
+      })
+      .join('');
+
+    if (lineText.trim()) {
+      parts.push(lineText.trim());
+    }
+  }
+
+  return parts.join('\n').trim();
+}
+
+async function getGroupChatMeta(client: Lark.Client, chatId: string): Promise<GroupChatMeta> {
+  const now = Date.now();
+  const cached = groupChatMetaCache.get(chatId);
+  if (cached && cached.expiresAt > now) {
+    return cached;
+  }
+
+  try {
+    const resp = await client.im.chat.get({
+      params: { user_id_type: 'open_id' },
+      path: { chat_id: chatId },
+    });
+    const data = resp.data || {};
+    const groupMessageType = typeof data.group_message_type === 'string' ? data.group_message_type : undefined;
+    const chatMode = typeof data.chat_mode === 'string' ? data.chat_mode : undefined;
+    const userCount = parseCount(data.user_count);
+    const botCount = parseCount(data.bot_count);
+
+    const meta: GroupChatMeta = {
+      fetchedAt: now,
+      expiresAt: now + GROUP_CHAT_META_TTL_MS,
+      isTopicGroup: groupMessageType === 'thread' || chatMode === 'topic',
+      isBotUserPairGroup: userCount === 1 && botCount === 1,
+      groupMessageType,
+      chatMode,
+      userCount,
+      botCount,
+    };
+
+    groupChatMetaCache.set(chatId, meta);
+    logFeishuRuntime('chat.meta', {
+      chatId,
+      groupMessageType: groupMessageType || null,
+      chatMode: chatMode || null,
+      userCount: userCount ?? null,
+      botCount: botCount ?? null,
+      isTopicGroup: meta.isTopicGroup,
+      isBotUserPairGroup: meta.isBotUserPairGroup,
+    });
+    return meta;
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    const meta: GroupChatMeta = {
+      fetchedAt: now,
+      expiresAt: now + GROUP_CHAT_META_ERROR_TTL_MS,
+      isTopicGroup: false,
+      isBotUserPairGroup: false,
+      fetchError: errMsg,
+    };
+
+    groupChatMetaCache.set(chatId, meta);
+    console.warn(`[群信息] 获取失败: ${chatId} | ${errMsg}`);
+    logFeishuRuntime('chat.meta.error', {
+      chatId,
+      error: errMsg,
+    });
+    return meta;
+  }
+}
+
 function startPeriodicRefresh() {
   setInterval(() => {
     console.log(`[WS刷新] 定时刷新连接...`);
@@ -372,22 +524,8 @@ export function startFeishuBot() {
           return;
         }
 
-        // 3. 群聊中只响应 @自己的消息
+        // 3. 群聊的 @ 过滤、两人群直连、话题模式判断放到异步处理阶段，避免这里同步查群信息
         const chatType = message.chat_type;
-        if (chatType === 'group') {
-          const mentions = data.message?.mentions;
-          const isMentioned = botOpenId
-            ? mentions?.some((m: any) => m.id?.open_id === botOpenId)
-            : mentions && mentions.length > 0; // fallback: 未获取到 botOpenId 时保持原逻辑
-          if (!isMentioned) {
-            logFeishuRuntime('event.skip.group_not_mentioned', {
-              messageId: message.message_id,
-              chatId: message.chat_id,
-            });
-            return;
-          }
-        }
-
         const senderId = data.sender?.sender_id?.open_id || 'unknown';
         // 私聊时记录 openId -> chatId 映射，供菜单事件使用
         if (chatType === 'p2p' && senderId !== 'unknown') {
@@ -569,13 +707,44 @@ async function handleMessage(client: Lark.Client, data: any) {
   const chatType = message.chat_type;
   const incomingMessageId = message.message_id;
   const providerName = getProviderName();
+  const groupChatMeta = chatType === 'group' ? await getGroupChatMeta(client, chatId) : null;
+  const isTopicGroup = groupChatMeta?.isTopicGroup === true;
+  const shouldSendProgressCard = !isTopicGroup;
 
   logFeishuRuntime('message.handle.start', {
     instance: INSTANCE_TAG,
     messageId: incomingMessageId,
     chatId,
     aiProvider: config.aiProvider,
+    groupMessageType: groupChatMeta?.groupMessageType || null,
+    isTopicGroup,
+    isBotUserPairGroup: groupChatMeta?.isBotUserPairGroup || false,
   });
+
+  if (chatType === 'group') {
+    const isMentioned = isMessageMentioningBot(message);
+    const allowWithoutMention = groupChatMeta?.isBotUserPairGroup === true;
+    if (!isMentioned && !allowWithoutMention) {
+      logFeishuRuntime('message.handle.skip.group_not_mentioned', {
+        messageId: incomingMessageId,
+        chatId,
+        groupMessageType: groupChatMeta?.groupMessageType || null,
+        userCount: groupChatMeta?.userCount ?? null,
+        botCount: groupChatMeta?.botCount ?? null,
+      });
+      return;
+    }
+
+    if (allowWithoutMention && !isMentioned) {
+      console.log(`[群聊] 两人群免 @ 触发 | chat_id: ${chatId}`);
+      logFeishuRuntime('message.handle.group_direct_trigger', {
+        messageId: incomingMessageId,
+        chatId,
+        userCount: groupChatMeta?.userCount ?? null,
+        botCount: groupChatMeta?.botCount ?? null,
+      });
+    }
+  }
 
   await addAckReaction(client, incomingMessageId);
 
@@ -583,23 +752,28 @@ async function handleMessage(client: Lark.Client, data: any) {
     console.log(`[跳过] 聊天 ${chatId} 正在处理中`);
     pendingMessages.set(chatId, data);
 
-    const waitCardState = createTaskProgressState('等待前一条任务完成');
     let queuedCardMessageId = queuedCardMessageIds.get(chatId) || null;
 
-    if (queuedCardMessageId) {
-      await syncProgressCard(client, queuedCardMessageId, providerName, waitCardState);
-    } else {
-      const waitCardMessageId = await sendCard(
-        client,
-        'chat_id',
-        chatId,
-        providerName,
-        renderTaskProgressMarkdown(waitCardState, config.feishuReplyShowUsage),
-      );
-      if (waitCardMessageId) {
-        queuedCardMessageIds.set(chatId, waitCardMessageId);
-        queuedCardMessageId = waitCardMessageId;
+    if (shouldSendProgressCard) {
+      const waitCardState = createTaskProgressState('等待前一条任务完成');
+      if (queuedCardMessageId) {
+        await syncProgressCard(client, queuedCardMessageId, providerName, waitCardState);
+      } else {
+        const waitCardMessageId = await sendCard(
+          client,
+          'chat_id',
+          chatId,
+          providerName,
+          renderTaskProgressMarkdown(waitCardState, config.feishuReplyShowUsage),
+        );
+        if (waitCardMessageId) {
+          queuedCardMessageIds.set(chatId, waitCardMessageId);
+          queuedCardMessageId = waitCardMessageId;
+        }
       }
+    } else if (queuedCardMessageId) {
+      queuedCardMessageIds.delete(chatId);
+      queuedCardMessageId = null;
     }
 
     logFeishuRuntime('message.handle.skip.processing', {
@@ -607,6 +781,7 @@ async function handleMessage(client: Lark.Client, data: any) {
       chatId,
       queued: true,
       queuedCardMessageId,
+      isTopicGroup,
     });
     return;
   }
@@ -617,19 +792,7 @@ async function handleMessage(client: Lark.Client, data: any) {
   try {
     const parsed = JSON.parse(message.content);
     if (message.message_type === 'post') {
-      const post = parsed.zh_cn || parsed.en_us || Object.values(parsed)[0] as any;
-      if (post?.content) {
-        const parts: string[] = [];
-        if (post.title) parts.push(post.title);
-        for (const line of post.content) {
-          const lineText = line
-            .filter((el: any) => el.tag === 'text' || el.tag === 'a')
-            .map((el: any) => el.text || '')
-            .join('');
-          if (lineText) parts.push(lineText);
-        }
-        text = parts.join('\n').trim();
-      }
+      text = extractPostText(parsed);
     } else if (message.message_type === 'image') {
       const imageKey = parsed.image_key;
       if (!imageKey || typeof imageKey !== 'string') {
@@ -684,6 +847,8 @@ async function handleMessage(client: Lark.Client, data: any) {
     logFeishuRuntime('message.handle.skip.empty_text', {
       messageId: incomingMessageId,
       chatId,
+      messageType: message.message_type,
+      content: message.content,
     });
     return;
   }
@@ -769,25 +934,36 @@ async function handleMessage(client: Lark.Client, data: any) {
   let progressCardMessageId: string | null = null;
 
   try {
-    progressCardMessageId = queuedCardMessageIds.get(chatId) || null;
-    if (progressCardMessageId) {
-      queuedCardMessageIds.delete(chatId);
-      progressState.current = '准备中';
-      await syncProgressCard(client, progressCardMessageId, providerName, progressState);
+    if (shouldSendProgressCard) {
+      progressCardMessageId = queuedCardMessageIds.get(chatId) || null;
+      if (progressCardMessageId) {
+        queuedCardMessageIds.delete(chatId);
+        progressState.current = '准备中';
+        await syncProgressCard(client, progressCardMessageId, providerName, progressState);
+      } else {
+        progressCardMessageId = await sendCard(
+          client,
+          'chat_id',
+          chatId,
+          providerName,
+          renderTaskProgressMarkdown(progressState, config.feishuReplyShowUsage),
+        );
+      }
     } else {
-      progressCardMessageId = await sendCard(
-        client,
-        'chat_id',
+      queuedCardMessageIds.delete(chatId);
+      logFeishuRuntime('message.handle.progress_card.skip', {
+        messageId: incomingMessageId,
         chatId,
-        providerName,
-        renderTaskProgressMarkdown(progressState, config.feishuReplyShowUsage),
-      );
+        reason: 'topic_group',
+        groupMessageType: groupChatMeta?.groupMessageType || null,
+      });
     }
 
     logFeishuRuntime('message.handle.progress_card', {
       messageId: incomingMessageId,
       chatId,
       progressCardMessageId,
+      isTopicGroup,
     });
 
     const result = await executeTask({
@@ -865,6 +1041,7 @@ async function handleMessage(client: Lark.Client, data: any) {
       chatId,
       responseMessageId: incomingMessageId,
       progressCardMessageId,
+      isTopicGroup,
       status: result.status,
       abortReason: result.abortReason || null,
       hasResult: Boolean(result.content),
@@ -878,6 +1055,7 @@ async function handleMessage(client: Lark.Client, data: any) {
       instance: INSTANCE_TAG,
       messageId: incomingMessageId,
       chatId,
+      isTopicGroup,
       error: errMsg,
     });
 

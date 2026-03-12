@@ -56,3 +56,18 @@
   - `src/scheduler-cli.ts` - 本地 schedule CLI，支持 list/add/update/enable/disable/delete/run/runs
   - `README.md` - 补充定时任务环境变量、CLI 用法和结构说明
 - **备注**: 当前实现按单实例设计，不处理多实例重复触发；Docker Compose 示例已透传调度环境变量。
+
+## 两人群免 @ 与话题群进度卡降级
+- **标签**: feishu, group-chat, topic, ux, bot
+- **描述**: 群聊场景下，识别 1 用户 + 1 机器人 的直连群并允许免 @ 触发，同时在话题模式群中关闭进度卡。
+- **入口**: 飞书消息处理入口 src/feishu.ts:handleMessage
+- **核心流程**:
+  1. 收到群消息后先通过 im.chat.get 拉取并缓存群元信息，识别 group_message_type、user_count、bot_count
+  2. 若群内计数为 1 个用户 + 1 个机器人，则即使未 @ 机器人也继续处理消息
+  3. 若群为话题模式（group_message_type=thread），跳过等待卡和执行进度卡，只保留最终 reply
+  4. 群信息读取失败时回退到原有行为，避免误放开普通群消息
+- **关键文件**:
+  - `src/feishu.ts` - 新增群信息缓存、两人群免 @ 判定、话题群进度卡关闭逻辑
+  - `scripts/check-feishu-permissions.mjs` - 新增群信息读取探针，便于验证话题群识别依赖
+  - `README.md` - 补充两人群直连、话题群降级和额外群消息权限说明
+- **备注**: 两人群免 @ 还依赖飞书开放平台允许机器人接收群内非 @ 消息；未开通时，代码已就绪但平台侧仍只会投递 @ 消息。
