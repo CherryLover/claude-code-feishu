@@ -68,8 +68,12 @@ const larkLogger = {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
+const DATA_DIR = path.join(PROJECT_ROOT, 'data');
 const LOG_DIR = path.join(PROJECT_ROOT, 'log');
 const FEISHU_RUNTIME_LOG_PATH = path.join(LOG_DIR, 'feishu-runtime.log');
+const TOPIC_SESSION_CACHE_DIR = path.join(DATA_DIR, 'topic-session-cache');
+const TOPIC_SESSION_HISTORY_DIR = path.join(TOPIC_SESSION_CACHE_DIR, 'history');
+const TOPIC_SESSION_CACHE_PATH = path.join(TOPIC_SESSION_CACHE_DIR, 'index.json');
 const INSTANCE_TAG = process.env.INSTANCE_TAG || `${os.hostname()}:${process.pid}`;
 
 if (!fs.existsSync(LOG_DIR)) {
@@ -100,21 +104,28 @@ function logFeishuRuntime(eventType: string, data: unknown): void {
   }
 }
 
-const sessions = new Map<string, string>(); // chatId -> claudeSessionId
+const sessions = new Map<string, string>(); // sessionKey -> claudeSessionId
 const openIdToChatId = new Map<string, string>(); // openId -> chatId（私聊映射，供菜单事件使用）
 const dedup = new MessageDedup();
-// 跟踪正在处理中的聊天，避免并发
+// 跟踪正在处理中的聊天，避免并发（key 为 sessionKey，话题群按话题隔离）
 const processing = new Set<string>();
-// 每个聊天保留一条待处理消息（只保留最新）
-const pendingMessages = new Map<string, any>(); // chatId -> eventData
-// 每个聊天保留一张「等待中」卡片，轮到处理时复用该卡片
-const queuedCardMessageIds = new Map<string, string>(); // chatId -> messageId
-// 跟踪每个聊天的中断控制器，用于 stop 命令
+// 每个会话保留一条待处理消息（只保留最新）
+const pendingMessages = new Map<string, any>(); // sessionKey -> eventData
+// 每个会话保留一张「等待中」卡片，轮到处理时复用该卡片
+const queuedCardMessageIds = new Map<string, string>(); // sessionKey -> messageId
+// 跟踪每个会话的中断控制器，用于 stop 命令
 const abortControllers = new Map<string, AbortController>();
 // 记录中断原因（用户停止 / 超时）
-const abortReasons = new Map<string, 'user' | 'timeout'>(); // chatId -> reason
+const abortReasons = new Map<string, 'user' | 'timeout'>(); // sessionKey -> reason
 // 存储卡片消息对应的原始文本（用于「复制原文」按钮回调）
 const cardRawContent = new Map<string, string>(); // messageId -> rawContent
+
+/**
+ * 构建会话级别的 key：话题群中按 chatId + threadId 隔离，非话题群 / 私聊仅用 chatId
+ */
+function buildSessionKey(chatId: string, threadId?: string): string {
+  return threadId ? `${chatId}:${threadId}` : chatId;
+}
 
 // 机器人自身的 open_id，用于群聊中判断是否 @了自己
 let botOpenId: string | null = null;
@@ -144,11 +155,37 @@ interface GroupChatMeta {
   fetchError?: string;
 }
 
+interface TopicSessionCacheEntry {
+  sessionKey: string;
+  chatId: string;
+  threadId: string;
+  sessionId: string | null;
+  historyFilePath?: string;
+  contextStartTimeMs?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface TopicSessionCacheFile {
+  version: 1;
+  updatedAt: string;
+  entries: Record<string, TopicSessionCacheEntry>;
+}
+
+interface TopicHistoryExportResult {
+  filePath: string;
+  totalMessages: number;
+  exportedMessages: number;
+}
+
 interface DownloadedImageInput {
   filePath: string;
   mimeType?: string;
   tempDir: string;
 }
+
+const topicSessionCache = new Map<string, TopicSessionCacheEntry>();
+let topicSessionCacheLoaded = false;
 
 function getChatTurnTimeoutMs(): number {
   const raw = Number(process.env.CHAT_TURN_TIMEOUT_MS || DEFAULT_CHAT_TURN_TIMEOUT_MS);
@@ -349,6 +386,367 @@ function extractPostText(parsed: any): string {
   return parts.join('\n').trim();
 }
 
+function ensureTopicSessionCacheDirs(): void {
+  fs.mkdirSync(TOPIC_SESSION_HISTORY_DIR, { recursive: true });
+}
+
+function normalizeTopicSessionCacheEntry(raw: unknown): TopicSessionCacheEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const entry = raw as Record<string, unknown>;
+  const sessionKey = typeof entry.sessionKey === 'string' ? entry.sessionKey.trim() : '';
+  const chatId = typeof entry.chatId === 'string' ? entry.chatId.trim() : '';
+  const threadId = typeof entry.threadId === 'string' ? entry.threadId.trim() : '';
+
+  if (!sessionKey || !chatId || !threadId) return null;
+
+  const sessionId = typeof entry.sessionId === 'string' && entry.sessionId.trim()
+    ? entry.sessionId.trim()
+    : null;
+  const historyFilePath = typeof entry.historyFilePath === 'string' && entry.historyFilePath.trim()
+    ? entry.historyFilePath.trim()
+    : undefined;
+  const contextStartTimeMs = parseCount(entry.contextStartTimeMs);
+  const createdAt = typeof entry.createdAt === 'string' && entry.createdAt.trim()
+    ? entry.createdAt.trim()
+    : new Date().toISOString();
+  const updatedAt = typeof entry.updatedAt === 'string' && entry.updatedAt.trim()
+    ? entry.updatedAt.trim()
+    : createdAt;
+
+  return {
+    sessionKey,
+    chatId,
+    threadId,
+    sessionId,
+    historyFilePath,
+    contextStartTimeMs,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function writeTopicSessionCache(): void {
+  ensureTopicSessionCacheDirs();
+
+  const entries = Object.fromEntries(
+    Array.from(topicSessionCache.entries())
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+      .map(([key, value]) => [key, value]),
+  );
+
+  const payload: TopicSessionCacheFile = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    entries,
+  };
+
+  const tempPath = `${TOPIC_SESSION_CACHE_PATH}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2));
+  fs.renameSync(tempPath, TOPIC_SESSION_CACHE_PATH);
+}
+
+function loadTopicSessionCache(): void {
+  if (topicSessionCacheLoaded) return;
+
+  ensureTopicSessionCacheDirs();
+  topicSessionCacheLoaded = true;
+
+  if (!fs.existsSync(TOPIC_SESSION_CACHE_PATH)) {
+    writeTopicSessionCache();
+    logFeishuRuntime('topic.session.cache.load', {
+      path: TOPIC_SESSION_CACHE_PATH,
+      count: 0,
+      restoredSessionCount: 0,
+    });
+    return;
+  }
+
+  try {
+    const raw = fs.readFileSync(TOPIC_SESSION_CACHE_PATH, 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<TopicSessionCacheFile>;
+    const entries = parsed.entries && typeof parsed.entries === 'object' ? parsed.entries : {};
+    let restoredSessionCount = 0;
+
+    for (const [sessionKey, value] of Object.entries(entries)) {
+      const entry = normalizeTopicSessionCacheEntry({ ...(value as object), sessionKey });
+      if (!entry) continue;
+
+      topicSessionCache.set(entry.sessionKey, entry);
+      if (entry.sessionId) {
+        sessions.set(entry.sessionKey, entry.sessionId);
+        restoredSessionCount += 1;
+      }
+    }
+
+    logFeishuRuntime('topic.session.cache.load', {
+      path: TOPIC_SESSION_CACHE_PATH,
+      count: topicSessionCache.size,
+      restoredSessionCount,
+    });
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.error(`[Topic会话缓存] 加载失败: ${errMsg}`);
+    logFeishuRuntime('topic.session.cache.load_error', {
+      path: TOPIC_SESSION_CACHE_PATH,
+      error: errMsg,
+    });
+  }
+}
+
+function getTopicSessionCacheEntry(sessionKey: string): TopicSessionCacheEntry | undefined {
+  return topicSessionCache.get(sessionKey);
+}
+
+function upsertTopicSessionCacheEntry(params: {
+  sessionKey: string;
+  chatId: string;
+  threadId: string;
+  sessionId?: string | null;
+  historyFilePath?: string | null;
+  contextStartTimeMs?: number | null;
+}): TopicSessionCacheEntry {
+  ensureTopicSessionCacheDirs();
+
+  const now = new Date().toISOString();
+  const previous = topicSessionCache.get(params.sessionKey);
+  const next: TopicSessionCacheEntry = {
+    sessionKey: params.sessionKey,
+    chatId: params.chatId,
+    threadId: params.threadId,
+    sessionId: previous?.sessionId || null,
+    historyFilePath: previous?.historyFilePath,
+    contextStartTimeMs: previous?.contextStartTimeMs,
+    createdAt: previous?.createdAt || now,
+    updatedAt: now,
+  };
+
+  if ('sessionId' in params) {
+    next.sessionId = params.sessionId || null;
+  }
+
+  if ('historyFilePath' in params) {
+    if (params.historyFilePath) {
+      next.historyFilePath = params.historyFilePath;
+    } else {
+      delete next.historyFilePath;
+    }
+  }
+
+  if ('contextStartTimeMs' in params) {
+    const timestamp = parseCount(params.contextStartTimeMs);
+    if (timestamp !== undefined) {
+      next.contextStartTimeMs = timestamp;
+    } else {
+      delete next.contextStartTimeMs;
+    }
+  }
+
+  topicSessionCache.set(params.sessionKey, next);
+
+  if ('sessionId' in params) {
+    if (next.sessionId) {
+      sessions.set(params.sessionKey, next.sessionId);
+    } else {
+      sessions.delete(params.sessionKey);
+    }
+  }
+
+  writeTopicSessionCache();
+  return next;
+}
+
+function formatHistoryTimestamp(timestampMs?: string): string {
+  const parsed = parseCount(timestampMs);
+  if (parsed === undefined) return '未知时间';
+
+  return new Date(parsed).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).replace(/\//g, '-');
+}
+
+function replaceMessageMentions(text: string, mentions?: Array<{ key?: string; name?: string }>): string {
+  let nextText = text;
+
+  for (const mention of mentions || []) {
+    if (!mention?.key || !mention?.name) continue;
+    nextText = nextText.split(mention.key).join(`@${mention.name}`);
+  }
+
+  return nextText.trim();
+}
+
+function extractHistoryMessageText(item: any): string {
+  if (item?.deleted) return '[消息已撤回]';
+
+  const msgType = typeof item?.msg_type === 'string' ? item.msg_type : '';
+  const rawContent = typeof item?.body?.content === 'string' ? item.body.content : '';
+
+  if (!rawContent) {
+    switch (msgType) {
+      case 'image':
+        return '[图片消息]';
+      case 'interactive':
+        return '';
+      default:
+        return msgType ? `[${msgType} 消息]` : '[未知消息]';
+    }
+  }
+
+  let parsed: any = null;
+  try {
+    parsed = JSON.parse(rawContent);
+  } catch {
+    return rawContent.trim();
+  }
+
+  switch (msgType) {
+    case 'text':
+      return replaceMessageMentions(typeof parsed?.text === 'string' ? parsed.text : '', item?.mentions);
+    case 'post':
+      return extractPostText(parsed);
+    case 'image':
+      return '[图片消息]';
+    case 'interactive':
+      return '';
+    default:
+      if (typeof parsed?.text === 'string') {
+        return replaceMessageMentions(parsed.text, item?.mentions);
+      }
+      return `[${msgType || '未知'} 消息]`;
+  }
+}
+
+async function resolveHistorySenderLabel(client: Lark.Client, item: any, providerName: string): Promise<string> {
+  const sender = item?.sender;
+  const senderType = typeof sender?.sender_type === 'string' ? sender.sender_type : '';
+  const senderId = typeof sender?.id === 'string' ? sender.id : '';
+  const senderIdType = typeof sender?.id_type === 'string' ? sender.id_type : '';
+
+  if (senderType === 'app') {
+    return providerName;
+  }
+
+  if (senderType === 'anonymous') {
+    return '匿名用户';
+  }
+
+  if (senderIdType === 'open_id' && senderId) {
+    return await resolveSenderName(client, senderId) || senderId;
+  }
+
+  return senderId || '未知发送者';
+}
+
+async function fetchTopicHistoryMessages(client: Lark.Client, threadId: string): Promise<any[]> {
+  const items: any[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const resp = await client.im.message.list({
+      params: {
+        container_id_type: 'thread',
+        container_id: threadId,
+        sort_type: 'ByCreateTimeAsc',
+        page_size: 50,
+        ...(pageToken ? { page_token: pageToken } : {}),
+      },
+    });
+
+    const pageItems = Array.isArray(resp.data?.items) ? resp.data.items : [];
+    items.push(...pageItems);
+    pageToken = resp.data?.has_more ? resp.data.page_token : undefined;
+  } while (pageToken);
+
+  return items;
+}
+
+async function exportTopicHistoryToMarkdown(
+  client: Lark.Client,
+  options: {
+    chatId: string;
+    threadId: string;
+    sessionKey: string;
+    providerName: string;
+    contextStartTimeMs?: number;
+  },
+): Promise<TopicHistoryExportResult> {
+  ensureTopicSessionCacheDirs();
+
+  const allMessages = await fetchTopicHistoryMessages(client, options.threadId);
+  const filteredMessages = options.contextStartTimeMs
+    ? allMessages.filter((item) => {
+      const createTimeMs = parseCount(item?.create_time);
+      return createTimeMs !== undefined && createTimeMs >= options.contextStartTimeMs!;
+    })
+    : allMessages;
+
+  const lines: string[] = [
+    '# 飞书多主题群聊历史记录',
+    '',
+    `- chat_id: ${options.chatId}`,
+    `- thread_id: ${options.threadId}`,
+    `- session_key: ${options.sessionKey}`,
+    `- exported_at: ${new Date().toISOString()}`,
+    `- total_messages: ${allMessages.length}`,
+    `- filtered_messages: ${filteredMessages.length}`,
+  ];
+
+  if (options.contextStartTimeMs) {
+    lines.push(`- context_start: ${formatHistoryTimestamp(String(options.contextStartTimeMs))}`);
+  }
+
+  lines.push('', '## 对话记录', '');
+
+  let exportedMessages = 0;
+  for (const item of filteredMessages) {
+    const content = extractHistoryMessageText(item);
+    if (!content) continue;
+
+    const senderLabel = await resolveHistorySenderLabel(client, item, options.providerName);
+    const senderType = item?.sender?.sender_type === 'app' ? 'AI' : '用户';
+    lines.push(`### ${senderLabel}（${senderType}） · ${formatHistoryTimestamp(item?.create_time)}`);
+    lines.push('');
+    lines.push(content);
+    lines.push('');
+    exportedMessages += 1;
+  }
+
+  if (exportedMessages === 0) {
+    lines.push('（没有可导出的历史文本消息）', '');
+  }
+
+  const filename = `${sanitizeWorkspaceSegment(options.chatId)}__${sanitizeWorkspaceSegment(options.threadId)}__${Date.now()}.md`;
+  const filePath = path.join(TOPIC_SESSION_HISTORY_DIR, filename);
+  fs.writeFileSync(filePath, `${lines.join('\n').trim()}\n`);
+
+  return {
+    filePath,
+    totalMessages: allMessages.length,
+    exportedMessages,
+  };
+}
+
+function buildTopicRecoveryPrompt(prompt: string, historyFilePath: string): string {
+  return [
+    '你当前收到的消息来自飞书多主题群聊。',
+    '当前没有找到这个 topic 对应的本地 AI 会话，因此需要恢复上下文。',
+    `本地历史文件：${historyFilePath}`,
+    '上面的文件只是之前的会话记录，请先读取它，再根据上下文回答用户当前的问题。',
+    '如果历史记录与用户当前最新消息冲突，以用户当前最新消息为准。',
+    '',
+    '【用户当前最新消息】',
+    prompt,
+  ].join('\n');
+}
+
 async function getGroupChatMeta(client: Lark.Client, chatId: string): Promise<GroupChatMeta> {
   const now = Date.now();
   const cached = groupChatMetaCache.get(chatId);
@@ -440,8 +838,9 @@ async function sendResponseForIncoming(
   incomingMessageId: string,
   _title: string,
   content: string,
+  replyInThread = false,
 ): Promise<string | null> {
-  return sendReplyText(client, incomingMessageId, content);
+  return sendReplyText(client, incomingMessageId, content, replyInThread);
 }
 
 async function syncProgressCard(
@@ -461,6 +860,7 @@ async function syncProgressCard(
 export function startFeishuBot() {
   console.log(`[飞书运行日志] 路径: ${FEISHU_RUNTIME_LOG_PATH}`);
   console.log(`[实例] ${INSTANCE_TAG}`);
+  loadTopicSessionCache();
   logFeishuRuntime('service.boot', {
     instance: INSTANCE_TAG,
     pid: process.pid,
@@ -706,15 +1106,20 @@ async function handleMessage(client: Lark.Client, data: any) {
   const chatId = message.chat_id;
   const chatType = message.chat_type;
   const incomingMessageId = message.message_id;
+  const threadId: string | undefined = message.thread_id || undefined;
   const providerName = getProviderName();
   const groupChatMeta = chatType === 'group' ? await getGroupChatMeta(client, chatId) : null;
   const isTopicGroup = groupChatMeta?.isTopicGroup === true;
   const shouldSendProgressCard = !isTopicGroup;
+  // 话题群中按 chatId + threadId 隔离会话，非话题群仅用 chatId
+  const sessionKey = buildSessionKey(chatId, isTopicGroup ? threadId : undefined);
 
   logFeishuRuntime('message.handle.start', {
     instance: INSTANCE_TAG,
     messageId: incomingMessageId,
     chatId,
+    threadId: threadId || null,
+    sessionKey,
     aiProvider: config.aiProvider,
     groupMessageType: groupChatMeta?.groupMessageType || null,
     isTopicGroup,
@@ -748,11 +1153,11 @@ async function handleMessage(client: Lark.Client, data: any) {
 
   await addAckReaction(client, incomingMessageId);
 
-  if (processing.has(chatId)) {
-    console.log(`[跳过] 聊天 ${chatId} 正在处理中`);
-    pendingMessages.set(chatId, data);
+  if (processing.has(sessionKey)) {
+    console.log(`[跳过] 会话 ${sessionKey} 正在处理中`);
+    pendingMessages.set(sessionKey, data);
 
-    let queuedCardMessageId = queuedCardMessageIds.get(chatId) || null;
+    let queuedCardMessageId = queuedCardMessageIds.get(sessionKey) || null;
 
     if (shouldSendProgressCard) {
       const waitCardState = createTaskProgressState('等待前一条任务完成');
@@ -767,18 +1172,19 @@ async function handleMessage(client: Lark.Client, data: any) {
           renderTaskProgressMarkdown(waitCardState, config.feishuReplyShowUsage),
         );
         if (waitCardMessageId) {
-          queuedCardMessageIds.set(chatId, waitCardMessageId);
+          queuedCardMessageIds.set(sessionKey, waitCardMessageId);
           queuedCardMessageId = waitCardMessageId;
         }
       }
     } else if (queuedCardMessageId) {
-      queuedCardMessageIds.delete(chatId);
+      queuedCardMessageIds.delete(sessionKey);
       queuedCardMessageId = null;
     }
 
     logFeishuRuntime('message.handle.skip.processing', {
       messageId: incomingMessageId,
       chatId,
+      sessionKey,
       queued: true,
       queuedCardMessageId,
       isTopicGroup,
@@ -828,7 +1234,7 @@ async function handleMessage(client: Lark.Client, data: any) {
     });
 
     if (message.message_type === 'image') {
-      await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, `❌ 图片读取失败：${errMsg}`);
+      await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, `❌ 图片读取失败：${errMsg}`, isTopicGroup);
     }
 
     return;
@@ -856,33 +1262,43 @@ async function handleMessage(client: Lark.Client, data: any) {
   console.log(`[消息内容] "${text}"`);
 
   if (text === '/clear' || text === '/new') {
-    console.log(`[命令] 清除会话`);
-    sessions.delete(chatId);
-    await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '✅ 会话已清除，开始新对话');
+    console.log(`[命令] 清除会话 | sessionKey: ${sessionKey}`);
+    sessions.delete(sessionKey);
+    if (isTopicGroup && threadId) {
+      upsertTopicSessionCacheEntry({
+        sessionKey,
+        chatId,
+        threadId,
+        sessionId: null,
+        contextStartTimeMs: Date.now(),
+      });
+    }
+    await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '✅ 会话已清除，开始新对话', isTopicGroup);
     return;
   }
 
   if (text === '/stop') {
-    console.log(`[命令] 停止处理`);
-    if (abortControllers.has(chatId)) {
-      abortReasons.set(chatId, 'user');
-      abortControllers.get(chatId)!.abort();
-      await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '⏹️ 已停止当前处理');
+    console.log(`[命令] 停止处理 | sessionKey: ${sessionKey}`);
+    if (abortControllers.has(sessionKey)) {
+      abortReasons.set(sessionKey, 'user');
+      abortControllers.get(sessionKey)!.abort();
+      await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '⏹️ 已停止当前处理', isTopicGroup);
     } else {
-      await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '💤 当前没有正在处理的任务');
+      await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '💤 当前没有正在处理的任务', isTopicGroup);
     }
     return;
   }
 
   if (text === '/status') {
-    console.log(`[命令] 查询状态`);
-    const hasSession = sessions.has(chatId);
+    console.log(`[命令] 查询状态 | sessionKey: ${sessionKey}`);
+    const hasSession = sessions.has(sessionKey);
     await sendResponseForIncoming(
       client,
       chatId,
       incomingMessageId,
       providerName,
       hasSession ? '📍 当前有活跃会话' : '💤 无活跃会话',
+      isTopicGroup,
     );
     return;
   }
@@ -909,7 +1325,7 @@ async function handleMessage(client: Lark.Client, data: any) {
       workingDirectory,
       error: errMsg,
     });
-    await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, `❌ 无法准备用户工作目录：${errMsg}`);
+    await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, `❌ 无法准备用户工作目录：${errMsg}`, isTopicGroup);
     return;
   }
 
@@ -922,12 +1338,85 @@ async function handleMessage(client: Lark.Client, data: any) {
     workingDirectory,
   });
 
-  console.log(`[${providerName}] 开始处理...`);
-  processing.add(chatId);
+  let topicSessionEntry = isTopicGroup && threadId
+    ? getTopicSessionCacheEntry(sessionKey)
+    : undefined;
+
+  if (isTopicGroup && threadId && (!topicSessionEntry || topicSessionEntry.chatId !== chatId || topicSessionEntry.threadId !== threadId)) {
+    topicSessionEntry = upsertTopicSessionCacheEntry({
+      sessionKey,
+      chatId,
+      threadId,
+    });
+  }
+
+  let taskPrompt = text;
+  let sessionId = sessions.get(sessionKey) || null;
+  let recoveredHistoryFilePath: string | null = null;
+
+  if (topicSessionEntry?.sessionId && !sessionId) {
+    sessionId = topicSessionEntry.sessionId;
+    sessions.set(sessionKey, sessionId);
+  }
+
+  if (isTopicGroup && threadId && !sessionId) {
+    try {
+      const historyExport = await exportTopicHistoryToMarkdown(client, {
+        chatId,
+        threadId,
+        sessionKey,
+        providerName,
+        contextStartTimeMs: topicSessionEntry?.contextStartTimeMs,
+      });
+
+      recoveredHistoryFilePath = historyExport.filePath;
+      taskPrompt = buildTopicRecoveryPrompt(text, recoveredHistoryFilePath);
+      topicSessionEntry = upsertTopicSessionCacheEntry({
+        sessionKey,
+        chatId,
+        threadId,
+        historyFilePath: recoveredHistoryFilePath,
+      });
+
+      logFeishuRuntime('message.handle.topic_context_recovery', {
+        messageId: incomingMessageId,
+        chatId,
+        threadId,
+        sessionKey,
+        historyFilePath: recoveredHistoryFilePath,
+        totalMessages: historyExport.totalMessages,
+        exportedMessages: historyExport.exportedMessages,
+      });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : '未知错误';
+      console.error(`[Topic会话恢复] 导出历史失败: ${sessionKey} | ${errMsg}`);
+      logFeishuRuntime('message.handle.topic_context_recovery_error', {
+        messageId: incomingMessageId,
+        chatId,
+        threadId,
+        sessionKey,
+        error: errMsg,
+      });
+
+      if (topicSessionEntry?.historyFilePath && fs.existsSync(topicSessionEntry.historyFilePath)) {
+        recoveredHistoryFilePath = topicSessionEntry.historyFilePath;
+        taskPrompt = buildTopicRecoveryPrompt(text, recoveredHistoryFilePath);
+        logFeishuRuntime('message.handle.topic_context_recovery_fallback', {
+          messageId: incomingMessageId,
+          chatId,
+          threadId,
+          sessionKey,
+          historyFilePath: recoveredHistoryFilePath,
+        });
+      }
+    }
+  }
+
+  console.log(`[${providerName}] 开始处理... | sessionKey: ${sessionKey}`);
+  processing.add(sessionKey);
   const abortController = new AbortController();
-  abortControllers.set(chatId, abortController);
-  abortReasons.delete(chatId);
-  const sessionId = sessions.get(chatId) || null;
+  abortControllers.set(sessionKey, abortController);
+  abortReasons.delete(sessionKey);
   const chatTurnTimeoutMs = getChatTurnTimeoutMs();
   const chatTurnTimeoutSec = Math.ceil(chatTurnTimeoutMs / 1000);
   const progressState = createTaskProgressState();
@@ -935,9 +1424,9 @@ async function handleMessage(client: Lark.Client, data: any) {
 
   try {
     if (shouldSendProgressCard) {
-      progressCardMessageId = queuedCardMessageIds.get(chatId) || null;
+      progressCardMessageId = queuedCardMessageIds.get(sessionKey) || null;
       if (progressCardMessageId) {
-        queuedCardMessageIds.delete(chatId);
+        queuedCardMessageIds.delete(sessionKey);
         progressState.current = '准备中';
         await syncProgressCard(client, progressCardMessageId, providerName, progressState);
       } else {
@@ -950,7 +1439,7 @@ async function handleMessage(client: Lark.Client, data: any) {
         );
       }
     } else {
-      queuedCardMessageIds.delete(chatId);
+      queuedCardMessageIds.delete(sessionKey);
       logFeishuRuntime('message.handle.progress_card.skip', {
         messageId: incomingMessageId,
         chatId,
@@ -967,11 +1456,11 @@ async function handleMessage(client: Lark.Client, data: any) {
     });
 
     const result = await executeTask({
-      prompt: text,
+      prompt: taskPrompt,
       sessionId,
       timeoutMs: chatTurnTimeoutMs,
       abortSignal: abortController.signal,
-      externalAbortReason: () => (abortReasons.get(chatId) === 'user' ? 'user' : 'external'),
+      externalAbortReason: () => (abortReasons.get(sessionKey) === 'user' ? 'user' : 'external'),
       feishuClient: client,
       chatId,
       senderOpenId,
@@ -1005,8 +1494,19 @@ async function handleMessage(client: Lark.Client, data: any) {
       },
     });
 
-    if (result.sessionId) {
-      sessions.set(chatId, result.sessionId);
+    if (isTopicGroup && threadId) {
+      topicSessionEntry = upsertTopicSessionCacheEntry({
+        sessionKey,
+        chatId,
+        threadId,
+        sessionId: result.sessionId || sessionId || null,
+        ...(recoveredHistoryFilePath ? { historyFilePath: recoveredHistoryFilePath } : {}),
+        ...(topicSessionEntry?.contextStartTimeMs !== undefined
+          ? { contextStartTimeMs: topicSessionEntry.contextStartTimeMs }
+          : {}),
+      });
+    } else if (result.sessionId) {
+      sessions.set(sessionKey, result.sessionId);
     }
 
     let finalReplyText = result.content.trim();
@@ -1033,7 +1533,7 @@ async function handleMessage(client: Lark.Client, data: any) {
       finalReplyText += formatUsageInfo(result.usageInfo);
     }
 
-    await sendReplyText(client, incomingMessageId, finalReplyText);
+    await sendReplyText(client, incomingMessageId, finalReplyText, isTopicGroup);
 
     logFeishuRuntime('message.handle.done', {
       instance: INSTANCE_TAG,
@@ -1063,17 +1563,18 @@ async function handleMessage(client: Lark.Client, data: any) {
     if (progressCardMessageId) {
       await syncProgressCard(client, progressCardMessageId, providerName, progressState);
     }
-    await sendReplyText(client, incomingMessageId, `❌ 错误: ${errMsg}`);
+    await sendReplyText(client, incomingMessageId, `❌ 错误: ${errMsg}`, isTopicGroup);
   } finally {
-    processing.delete(chatId);
-    abortControllers.delete(chatId);
-    abortReasons.delete(chatId);
+    processing.delete(sessionKey);
+    abortControllers.delete(sessionKey);
+    abortReasons.delete(sessionKey);
 
-    const pending = pendingMessages.get(chatId);
+    const pending = pendingMessages.get(sessionKey);
     if (pending) {
-      pendingMessages.delete(chatId);
+      pendingMessages.delete(sessionKey);
       logFeishuRuntime('message.handle.dequeue', {
         chatId,
+        sessionKey,
         messageId: pending?.message?.message_id,
       });
       setImmediate(() => {

@@ -102,6 +102,7 @@ export async function sendPlainReplyText(
   client: Lark.Client,
   messageId: string,
   content: string,
+  replyInThread = false,
 ): Promise<string | null> {
   try {
     const resp = await client.im.message.reply({
@@ -109,7 +110,7 @@ export async function sendPlainReplyText(
       data: {
         msg_type: 'text',
         content: JSON.stringify({ text: trimReplyText(content) }),
-        reply_in_thread: false,
+        reply_in_thread: replyInThread,
       },
     });
     const replyMessageId = resp.data?.message_id;
@@ -126,6 +127,7 @@ export async function sendMarkdownReply(
   client: Lark.Client,
   messageId: string,
   content: string,
+  replyInThread = false,
 ): Promise<string | null> {
   try {
     const resp = await client.im.message.reply({
@@ -133,7 +135,7 @@ export async function sendMarkdownReply(
       data: {
         msg_type: 'post',
         content: buildReplyMarkdownPostContent(content),
-        reply_in_thread: false,
+        reply_in_thread: replyInThread,
       },
     });
     const replyMessageId = resp.data?.message_id;
@@ -150,14 +152,15 @@ export async function sendReplyText(
   client: Lark.Client,
   messageId: string,
   content: string,
+  replyInThread = false,
 ): Promise<string | null> {
   if (isReplyMarkdownMode()) {
-    const replyMessageId = await sendMarkdownReply(client, messageId, content);
+    const replyMessageId = await sendMarkdownReply(client, messageId, content, replyInThread);
     if (replyMessageId) return replyMessageId;
     console.warn('[飞书] Markdown 回复失败，回退为纯文本回复');
   }
 
-  return sendPlainReplyText(client, messageId, content);
+  return sendPlainReplyText(client, messageId, content, replyInThread);
 }
 
 export async function sendCard(

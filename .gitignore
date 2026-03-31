@@ -9,4 +9,5 @@ log/
 data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
+data/topic-session-cache/
 workspace/

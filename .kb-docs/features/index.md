@@ -71,3 +71,18 @@
   - `scripts/check-feishu-permissions.mjs` - 新增群信息读取探针，便于验证话题群识别依赖
   - `README.md` - 补充两人群直连、话题群降级和额外群消息权限说明
 - **备注**: 两人群免 @ 还依赖飞书开放平台允许机器人接收群内非 @ 消息；未开通时，代码已就绪但平台侧仍只会投递 @ 消息。
+
+## 飞书多主题群聊会话恢复
+- **标签**: feishu, topic-group, session, recovery
+- **描述**: 为多主题群聊增加 topic 级会话持久化与重启后的历史回填兜底。
+- **入口**: 飞书消息入口 `src/feishu.ts` 的 `handleMessage`，仅在多主题群聊的 thread/topic 场景触发。
+- **核心流程**:
+  1. 收到多主题群聊消息后，按 `chatId + threadId` 构造 sessionKey。
+  2. 优先从本地 topic 会话缓存恢复 sessionId。
+  3. 如果没有可恢复 sessionId，则拉取当前 thread 的历史消息并导出为 Markdown 文件。
+  4. 把历史文件路径拼入当前 prompt，提示 AI 把它当作之前的会话记录继续回答。
+  5. 成功返回后把 sessionId、threadId、历史文件路径和上下文起点重新写回本地缓存。
+- **关键文件**:
+  - `src/feishu.ts` - 实现 topic 会话缓存、历史拉取导出、prompt 回填和重启恢复主流程。
+  - `src/feishu-messages.ts` - 支持 reply_in_thread，确保多主题群聊回复落回对应 thread。
+- **备注**: `/clear` 和 `/new` 会把 topic 会话重置为新上下文，并记录 contextStartTimeMs，避免历史回填时把清空前的旧对话重新喂给模型。
