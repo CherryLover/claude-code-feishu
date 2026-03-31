@@ -747,6 +747,50 @@ function buildTopicRecoveryPrompt(prompt: string, historyFilePath: string): stri
   ].join('\n');
 }
 
+function cleanupTopicRecoveryHistoryFile(params: {
+  sessionKey: string;
+  chatId: string;
+  threadId: string;
+  historyFilePath: string;
+}): void {
+  const { sessionKey, chatId, threadId, historyFilePath } = params;
+  const cacheEntry = topicSessionCache.get(sessionKey);
+  const shouldClearCachePath = cacheEntry?.historyFilePath === historyFilePath;
+
+  try {
+    if (fs.existsSync(historyFilePath)) {
+      fs.unlinkSync(historyFilePath);
+    }
+
+    if (shouldClearCachePath) {
+      upsertTopicSessionCacheEntry({
+        sessionKey,
+        chatId,
+        threadId,
+        historyFilePath: null,
+      });
+    }
+
+    logFeishuRuntime('message.handle.topic_context_cleanup', {
+      chatId,
+      threadId,
+      sessionKey,
+      historyFilePath,
+      clearedCachePath: shouldClearCachePath,
+    });
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    console.error(`[Topic会话恢复] 清理历史文件失败: ${historyFilePath} | ${errMsg}`);
+    logFeishuRuntime('message.handle.topic_context_cleanup_error', {
+      chatId,
+      threadId,
+      sessionKey,
+      historyFilePath,
+      error: errMsg,
+    });
+  }
+}
+
 async function getGroupChatMeta(client: Lark.Client, chatId: string): Promise<GroupChatMeta> {
   const now = Date.now();
   const cached = groupChatMetaCache.get(chatId);
@@ -1421,6 +1465,7 @@ async function handleMessage(client: Lark.Client, data: any) {
   const chatTurnTimeoutSec = Math.ceil(chatTurnTimeoutMs / 1000);
   const progressState = createTaskProgressState();
   let progressCardMessageId: string | null = null;
+  let usedRecoveredHistoryFilePath: string | null = null;
 
   try {
     if (shouldSendProgressCard) {
@@ -1454,6 +1499,8 @@ async function handleMessage(client: Lark.Client, data: any) {
       progressCardMessageId,
       isTopicGroup,
     });
+
+    usedRecoveredHistoryFilePath = recoveredHistoryFilePath;
 
     const result = await executeTask({
       prompt: taskPrompt,
@@ -1586,6 +1633,15 @@ async function handleMessage(client: Lark.Client, data: any) {
 
     if (downloadedImageInputs.length > 0) {
       cleanupDownloadedImages(downloadedImageInputs);
+    }
+
+    if (isTopicGroup && threadId && usedRecoveredHistoryFilePath) {
+      cleanupTopicRecoveryHistoryFile({
+        sessionKey,
+        chatId,
+        threadId,
+        historyFilePath: usedRecoveredHistoryFilePath,
+      });
     }
   }
 }

@@ -85,4 +85,4 @@
 - **关键文件**:
   - `src/feishu.ts` - 实现 topic 会话缓存、历史拉取导出、prompt 回填和重启恢复主流程。
   - `src/feishu-messages.ts` - 支持 reply_in_thread，确保多主题群聊回复落回对应 thread。
-- **备注**: `/clear` 和 `/new` 会把 topic 会话重置为新上下文，并记录 contextStartTimeMs，避免历史回填时把清空前的旧对话重新喂给模型。
+- **备注**: `/clear` 和 `/new` 会把 topic 会话重置为新上下文，并记录 contextStartTimeMs，避免历史回填时把清空前的旧对话重新喂给模型；恢复上下文用的历史 Markdown 在当前轮 AI 真正开始读取后会立即在收尾阶段删除，并同步清空缓存里的文件路径。
