@@ -136,9 +136,7 @@ let eventDispatcherRef: Lark.EventDispatcher | null = null;
 const WS_REFRESH_INTERVAL = 30 * 60 * 1000; // 每 30 分钟刷新一次连接
 const senderNameCache = new Map<string, string>(); // openId -> 发送者姓名
 const DEFAULT_CHAT_TURN_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟
-const PROJECT_WORKSPACE_ROOT = path.join(PROJECT_ROOT, 'workspace');
-const PRIVATE_WORKSPACE_PREFIX = 'user_';
-const SHARED_WORKSPACE_DIR = path.join(PROJECT_WORKSPACE_ROOT, 'shared');
+const MESSAGE_WORKSPACE_DIR = config.messageWorkspace;
 const groupChatMetaCache = new Map<string, GroupChatMeta>();
 const GROUP_CHAT_META_TTL_MS = 5 * 60 * 1000;
 const GROUP_CHAT_META_ERROR_TTL_MS = 60 * 1000;
@@ -204,23 +202,35 @@ function sanitizeWorkspaceSegment(value: string): string {
   return value.trim().replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-function resolveMessageWorkingDirectory(chatType: string, senderOpenId?: string): string {
-  if (chatType === 'p2p' && senderOpenId) {
-    if (config.developerOpenId && senderOpenId === config.developerOpenId) {
-      return config.developerWorkspace || os.homedir();
-    }
+function resolveMessageWorkingDirectory(): string {
+  return MESSAGE_WORKSPACE_DIR;
+}
 
-    const safeUserId = sanitizeWorkspaceSegment(senderOpenId);
-    if (safeUserId) {
-      return path.join(PROJECT_WORKSPACE_ROOT, `${PRIVATE_WORKSPACE_PREFIX}${safeUserId}`);
-    }
-  }
+function isAuthorizedSender(senderName?: string): boolean {
+  const authorizedUserName = config.authorizedUserName?.trim();
+  if (!authorizedUserName) return true;
+  return Boolean(senderName && senderName.trim() === authorizedUserName);
+}
 
-  return SHARED_WORKSPACE_DIR;
+function getUnauthorizedAccessMessage(): string {
+  return '⚠️ 当前机器人未对你开放使用权限。';
 }
 
 async function ensureWorkingDirectory(workspacePath: string): Promise<void> {
-  await fs.promises.mkdir(workspacePath, { recursive: true });
+  let stats: fs.Stats;
+
+  try {
+    stats = await fs.promises.stat(workspacePath);
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : '未知错误';
+    throw new Error(`工作目录不存在：${workspacePath} (${errMsg})`);
+  }
+
+  if (!stats.isDirectory()) {
+    throw new Error(`工作目录不是目录：${workspacePath}`);
+  }
+
+  await fs.promises.access(workspacePath, fs.constants.R_OK | fs.constants.W_OK);
 }
 
 function getSingleHeaderValue(value: unknown): string | undefined {
@@ -911,7 +921,8 @@ export function startFeishuBot() {
     cwd: process.cwd(),
     aiProvider: config.aiProvider,
     configuredWorkspace: config.workspace,
-    runtimeWorkspaceRoot: PROJECT_WORKSPACE_ROOT,
+    authorizedUserName: config.authorizedUserName || null,
+    messageWorkspace: MESSAGE_WORKSPACE_DIR,
     chatTurnTimeoutMs: getChatTurnTimeoutMs(),
     replyOptions: {
       showUsage: config.feishuReplyShowUsage,
@@ -1078,8 +1089,9 @@ async function sendStartupNotification(client: Lark.Client) {
       isOpenId ? 'open_id' : 'chat_id',
       userId,
       `✅ 机器人已启动
-目录根: ${PROJECT_WORKSPACE_ROOT}
-私聊目录: ${PROJECT_WORKSPACE_ROOT}/user_<open_id>`,
+允许用户: ${config.authorizedUserName || '未限制'}
+单用户工作目录: ${MESSAGE_WORKSPACE_DIR}
+Provider 备用目录: ${config.workspace}`,
     );
     console.log(`[启动通知] 发送成功`);
   } catch (error: unknown) {
@@ -1090,6 +1102,19 @@ async function sendStartupNotification(client: Lark.Client) {
 
 async function handleMenuEvent(client: Lark.Client, eventKey: string, openId: string) {
   const chatId = openIdToChatId.get(openId);
+  const senderName = await resolveSenderName(client, openId);
+
+  if (!isAuthorizedSender(senderName)) {
+    logFeishuRuntime('menu.handle.skip.unauthorized', {
+      eventKey,
+      openId,
+      senderName: senderName || null,
+      chatId: chatId || null,
+      authorizedUserName: config.authorizedUserName || null,
+    });
+    await sendCardToUser(client, openId, chatId, 'Claude Code', getUnauthorizedAccessMessage());
+    return;
+  }
 
   switch (eventKey) {
     case '/clear':
@@ -1151,6 +1176,7 @@ async function handleMessage(client: Lark.Client, data: any) {
   const chatType = message.chat_type;
   const incomingMessageId = message.message_id;
   const threadId: string | undefined = message.thread_id || undefined;
+  const senderOpenId = data.sender?.sender_id?.open_id;
   const providerName = getProviderName();
   const groupChatMeta = chatType === 'group' ? await getGroupChatMeta(client, chatId) : null;
   const isTopicGroup = groupChatMeta?.isTopicGroup === true;
@@ -1193,6 +1219,22 @@ async function handleMessage(client: Lark.Client, data: any) {
         botCount: groupChatMeta?.botCount ?? null,
       });
     }
+  }
+
+  const senderName = await resolveSenderName(client, senderOpenId);
+
+  if (!isAuthorizedSender(senderName)) {
+    logFeishuRuntime('message.handle.skip.unauthorized', {
+      messageId: incomingMessageId,
+      chatId,
+      chatType,
+      threadId: threadId || null,
+      senderOpenId: senderOpenId || null,
+      senderName: senderName || null,
+      authorizedUserName: config.authorizedUserName || null,
+    });
+    await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, getUnauthorizedAccessMessage(), isTopicGroup);
+    return;
   }
 
   await addAckReaction(client, incomingMessageId);
@@ -1347,20 +1389,18 @@ async function handleMessage(client: Lark.Client, data: any) {
     return;
   }
 
-  const senderOpenId = data.sender?.sender_id?.open_id;
-  const senderName = await resolveSenderName(client, senderOpenId);
   if (senderName && senderOpenId) {
     console.log(`[消息上下文] 当前发送者: ${senderName} (${senderOpenId})`);
   } else if (senderOpenId) {
     console.log(`[消息上下文] 当前发送者 open_id: ${senderOpenId}`);
   }
 
-  const workingDirectory = resolveMessageWorkingDirectory(chatType, senderOpenId);
+  const workingDirectory = resolveMessageWorkingDirectory();
   try {
     await ensureWorkingDirectory(workingDirectory);
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
-    console.error(`[工作目录] 创建失败: ${workingDirectory} | ${errMsg}`);
+    console.error(`[工作目录] 访问失败: ${workingDirectory} | ${errMsg}`);
     logFeishuRuntime('message.handle.workspace_error', {
       messageId: incomingMessageId,
       chatId,
@@ -1369,7 +1409,7 @@ async function handleMessage(client: Lark.Client, data: any) {
       workingDirectory,
       error: errMsg,
     });
-    await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, `❌ 无法准备用户工作目录：${errMsg}`, isTopicGroup);
+    await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, `❌ 无法访问工作目录：${errMsg}`, isTopicGroup);
     return;
   }
 

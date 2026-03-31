@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import os from 'os';
 import path from 'path';
 dotenv.config({ override: true, quiet: true });
 
@@ -44,9 +45,11 @@ export const config = {
   // 启动通知（可选，填 open_id 或 chat_id）
   notifyUserId: process.env.NOTIFY_USER_ID || '',
 
-  // 开发者目录特例（可选，命中后优先使用本机目录）
-  developerOpenId: process.env.DEVELOPER_OPEN_ID || '',
-  developerWorkspace: process.env.DEVELOPER_WORKSPACE || (process.env.HOME || ''),
+  // 单用户访问限制（按用户名匹配）
+  authorizedUserName: process.env.AUTHORIZED_USER_NAME || '',
+
+  // 单用户消息工作目录（默认当前系统用户目录，兼容旧的 DEVELOPER_WORKSPACE）
+  messageWorkspace: resolvePath(process.env.MESSAGE_WORKSPACE || process.env.DEVELOPER_WORKSPACE, os.homedir()),
 
   // 最终 reply 消息格式：md（默认，post 富文本 md 节点）| text（纯文本）
   feishuReplyFormat: parseFeishuReplyFormat(process.env.FEISHU_REPLY_FORMAT),

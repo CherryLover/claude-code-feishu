@@ -14,7 +14,8 @@
 - **群聊 & 私聊** — 群聊中 @机器人 触发，私聊直接对话
 - **两人群直连** — 群内仅 1 个用户 + 1 个机器人时，可直接发消息触发，无需 @机器人
 - **话题群降级** — 识别话题模式群，自动关闭进度卡，仅保留最终回复
-- **私聊目录隔离** — 私聊按用户 `open_id` 自动使用独立工作目录（`<项目目录>/workspace/user_<open_id>`）
+- **单用户访问限制** — 可通过 `AUTHORIZED_USER_NAME` 只允许一个飞书用户名使用机器人
+- **单用户工作目录** — 所有飞书消息统一使用单一工作目录（默认当前系统用户目录，可用 `MESSAGE_WORKSPACE` 覆盖）
 - **富文本支持** — 支持飞书纯文本和富文本（Post）消息类型
 - **文件发送** — AI 可直接通过飞书发送文件给用户（图片、文档、音频等）
 - **进度卡 + 最终回复** — 固定使用单张进度卡展示当前执行项与计数，最终结果回复到用户原消息下；Token/上下文统计会追加在进度卡尾部
@@ -89,12 +90,12 @@ npm run dev
 | `OPENAI_BASE_URL` | 否 | OpenAI API 代理地址 |
 | `FEISHU_APP_ID` | 是 | 飞书应用 ID |
 | `FEISHU_APP_SECRET` | 是 | 飞书应用密钥 |
-| `WORKSPACE` | 否 | Provider 备用工作目录，默认 `/workspace`；私聊默认使用 `<项目目录>/workspace/user_<open_id>` |
+| `WORKSPACE` | 否 | Provider 备用工作目录，默认 `/workspace` |
+| `AUTHORIZED_USER_NAME` | 否 | 仅允许该飞书用户名使用机器人 |
+| `MESSAGE_WORKSPACE` | 否 | 飞书消息统一使用的单用户工作目录，默认当前系统用户目录；兼容旧的 `DEVELOPER_WORKSPACE` |
 | `SCHEDULER_ENABLED` | 否 | 是否启用定时任务调度，默认 `false` |
 | `SCHEDULER_DB_PATH` | 否 | SQLite 文件路径，默认 `<项目目录>/data/scheduler.sqlite` |
 | `SCHEDULER_TASK_TIMEOUT_MS` | 否 | 定时任务单次执行超时，默认 `600000`（10 分钟） |
-| `DEVELOPER_OPEN_ID` | 否 | 开发者自己的飞书 `open_id`；私聊命中后优先使用 `DEVELOPER_WORKSPACE` |
-| `DEVELOPER_WORKSPACE` | 否 | 开发者私聊命中时使用的本机目录；默认当前系统用户目录 |
 | `NOTIFY_USER_ID` | 否 | 启动时通知的用户 ID（open_id 或 chat_id） |
 | `FEISHU_REPLY_FORMAT` | 否 | 最终 reply 正文格式：`md`（默认）或 `text` |
 | `FEISHU_REPLY_SHOW_USAGE` | 否 | 是否在进度卡尾部展示 Token/费用（Claude 额外显示上下文占用） |
@@ -270,8 +271,8 @@ src/scheduler/
 - **3 秒超时处理** — 事件处理器立即返回，通过 `setImmediate()` 异步调用 AI，避免飞书超时重推
 - **会话持久化** — `Map<chatId, sessionId>` 维护会话映射，支持多轮对话
 - **并发控制** — `Set<chatId>` 跟踪处理中的聊天，拒绝并发请求
-- **私聊目录隔离** — 私聊消息自动映射到 `<项目目录>/workspace/user_<open_id>`，首次请求自动创建目录
-- **开发者目录特例** — 当私聊发送者 `open_id` 命中 `DEVELOPER_OPEN_ID` 时，优先使用 `DEVELOPER_WORKSPACE`（默认当前系统用户目录）
+- **单用户访问限制** — 配置 `AUTHORIZED_USER_NAME` 后，仅同名用户可继续使用机器人，其他人会收到未开放提示
+- **单用户工作目录** — 所有消息统一使用 `MESSAGE_WORKSPACE`（默认当前系统用户目录，兼容旧的 `DEVELOPER_WORKSPACE`），不再按 `open_id` 动态创建目录
 - **统一事件模型** — 两个 Provider 输出相同的 `ClaudeEvent` 类型，上层无需区分
 
 ## 开发

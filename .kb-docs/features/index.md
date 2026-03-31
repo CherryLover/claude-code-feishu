@@ -2,24 +2,40 @@
 
 记录项目已实现的功能、入口、流程和关键文件。
 
-## 私聊用户工作目录隔离
-- **标签**: feishu, multi-user, workspace, claude, codex
-- **描述**: 私聊场景按发送者 open_id 自动切换到独立目录，避免多人文件互相影响。
-- **入口**: 飞书私聊消息处理入口 src/feishu.ts:handleMessage
+## 单用户根目录工作模式
+- **标签**: feishu, single-user, workspace, claude, codex
+- **描述**: 统一取消按飞书用户分配独立目录，所有消息直接使用单一根目录作为工作目录。
+- **入口**: 飞书消息处理入口 `src/feishu.ts:handleMessage`
 - **核心流程**:
-  1. 解析 senderOpenId 与 chatType，私聊时生成 <项目目录>/workspace/user_<open_id> 目录
-  2. 首次消息自动 mkdir -p 目录并记录运行日志
-  3. workingDirectory 通过 streamChat 透传到 Claude/Codex provider
-  4. Claude query.cwd 与 Codex thread.workingDirectory 均使用该目录
+  1. 消息进入后不再根据 `chatType` 或 `senderOpenId` 动态映射目录。
+  2. 统一使用 `MESSAGE_WORKSPACE`（默认当前系统用户目录，兼容旧的 `DEVELOPER_WORKSPACE`）作为工作目录。
+  3. 执行前仅校验目录存在且可读写，不再自动创建 `workspace/user_<open_id>` 一类目录。
+  4. workingDirectory 继续透传到 Claude/Codex provider，保持工具调用行为不变。
 - **关键文件**:
-  - `src/feishu.ts` - 私聊目录映射、目录创建、workingDirectory 透传
-  - `src/types.ts` - StreamChatOptions 新增 workingDirectory
+  - `src/config.ts` - 增加单用户消息工作目录配置解析
+  - `src/feishu.ts` - 工作目录选择、访问校验、启动通知与运行日志
   - `src/provider.ts` - 统一 provider 层透传 workingDirectory
   - `src/claude.ts` - Claude query cwd 支持会话级目录
   - `src/codex-provider.ts` - Codex workingDirectory 支持会话级目录
-  - `README.md` - 文档补充私聊目录隔离说明
-  - `doc/multi-user.md` - 多用户方案文档更新为已实现状态
-- **备注**: 适用于多人私聊同一个机器人；群聊仍按 chatId 共享上下文与并发锁。
+  - `README.md` - 文档改为单用户工作目录说明
+  - `doc/multi-user.md` - 记录多用户方案已下线，保留单用户模式说明
+- **备注**: 会话隔离仍按聊天 / topic 维持，但文件系统工作目录不再按用户拆分。
+
+## 单用户访问限制
+- **标签**: feishu, single-user, auth, access-control
+- **描述**: 在消息入口直接校验发送者用户名，仅允许指定用户继续使用机器人。
+- **入口**: 飞书消息入口 `src/feishu.ts:handleMessage` 与菜单事件入口 `src/feishu.ts:handleMenuEvent`
+- **核心流程**:
+  1. 配置 `AUTHORIZED_USER_NAME` 作为唯一允许用户。
+  2. 收到消息或菜单事件后，先读取发送者姓名。
+  3. 若姓名不匹配，则直接返回未开放提示并结束，不再进入 AI、会话和工作目录逻辑。
+  4. 若匹配，再继续执行原有命令、会话和工具调用流程。
+- **关键文件**:
+  - `src/config.ts` - 增加单用户访问限制配置解析
+  - `src/feishu.ts` - 在消息入口和菜单事件入口增加授权校验与未授权提示
+  - `README.md` - 补充 `AUTHORIZED_USER_NAME` 的配置说明
+  - `doc/multi-user.md` - 记录多用户已下线后的单用户访问方式
+- **备注**: 这层限制发生在 AI 调用前，未授权请求不会占用会话、工作目录或模型额度。
 
 ## 进度卡追加 Usage 统计
 - **标签**: feishu, ui, reply, claude, codex
