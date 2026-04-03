@@ -1,4 +1,4 @@
-import { config } from './config.js';
+import { config } from '../config.js';
 import { ClaudeEvent, StreamChatOptions } from './types.js';
 
 function buildPromptWithSystemContext(prompt: string, options?: StreamChatOptions): string {
@@ -46,11 +46,11 @@ export async function* streamChat(
   const contextualPrompt = buildPromptWithSystemContext(prompt, options);
 
   if (config.aiProvider === 'codex') {
-    const { streamCodexChat } = await import('./codex-provider.js');
+    const { streamCodexChat } = await import('./codex.js');
     yield* streamCodexChat(contextualPrompt, sessionId, options);
   } else {
     const { streamClaudeChat } = await import('./claude.js');
-    const { createFeishuToolsServer } = await import('./tools.js');
+    const { createFeishuToolsServer } = await import('../tools/index.js');
 
     let mcpServers: Record<string, any> | undefined;
     if (options?.feishuClient && options?.chatId) {

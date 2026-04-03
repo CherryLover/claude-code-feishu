@@ -3,10 +3,10 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { config } from './config.js';
-import { getProviderName } from './provider.js';
-import { MessageDedup } from './dedup.js';
-import { InputImage } from './types.js';
+import { config } from '../config.js';
+import { getProviderName } from '../providers/index.js';
+import { MessageDedup } from '../core/dedup.js';
+import { InputImage } from '../providers/types.js';
 import {
   addAckReaction,
   formatUsageInfo,
@@ -14,10 +14,10 @@ import {
   sendReplyText,
   sendTextMessage,
   updateCard,
-} from './feishu-messages.js';
-import { executeTask } from './task-executor.js';
-import { createTaskProgressState, renderTaskProgressMarkdown } from './task-progress.js';
-import { startSchedulerService } from './scheduler/service.js';
+} from './messages.js';
+import { executeTask } from '../core/task-executor.js';
+import { createTaskProgressState, renderTaskProgressMarkdown } from '../core/task-progress.js';
+import { startSchedulerService } from '../scheduler/service.js';
 
 interface LarkErrorLike {
   message?: string;
@@ -67,7 +67,7 @@ const larkLogger = {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PROJECT_ROOT = path.resolve(__dirname, '..');
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
 const DATA_DIR = path.join(PROJECT_ROOT, 'data');
 const LOG_DIR = path.join(PROJECT_ROOT, 'log');
 const rawRuntimeNamespace = process.env.BOT_RUNTIME_NAMESPACE?.trim();

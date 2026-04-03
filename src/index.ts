@@ -1,12 +1,12 @@
 import { Worker } from 'worker_threads';
-import { applyProviderEnvOverrides, parseAiProviders, type AiProvider } from './bot-env.js';
+import { applyProviderEnvOverrides, parseAiProviders, type AiProvider } from './core/bot-env.js';
 
 const isTsMode = import.meta.url.endsWith('.ts');
 const workerModuleUrl = new URL(
-  isTsMode ? './bot-worker.ts' : './bot-worker.js',
+  isTsMode ? './core/bot-worker.ts' : './core/bot-worker.js',
   import.meta.url,
 );
-const runnerModule = isTsMode ? './bot-runner.ts' : './bot-runner.js';
+const runnerModule = isTsMode ? './core/bot-runner.ts' : './core/bot-runner.js';
 
 const providers = parseAiProviders(process.env.AI_PROVIDER);
 const workers = new Map<AiProvider, Worker>();

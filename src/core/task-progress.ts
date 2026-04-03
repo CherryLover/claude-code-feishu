@@ -1,6 +1,6 @@
-import { buildProgressCardContent } from './formatter.js';
-import { formatUsageInfo } from './feishu-messages.js';
-import { UsageInfo } from './types.js';
+import { buildProgressCardContent } from '../feishu/formatter.js';
+import { formatUsageInfo } from '../feishu/messages.js';
+import { UsageInfo } from '../providers/types.js';
 
 export interface TaskProgressState {
   current: string;

@@ -1,7 +1,7 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { buildFeishuCard } from './formatter.js';
-import { config } from './config.js';
-import { UsageInfo } from './types.js';
+import { config } from '../config.js';
+import { UsageInfo } from '../providers/types.js';
 
 const MAX_REPLY_TEXT_LENGTH = 6000;
 

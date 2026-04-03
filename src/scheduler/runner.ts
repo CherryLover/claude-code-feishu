@@ -5,10 +5,10 @@ import {
   sendCard,
   sendTextMessage,
   updateCard,
-} from '../feishu-messages.js';
-import { getProviderName } from '../provider.js';
-import { executeTask } from '../task-executor.js';
-import { renderTaskProgressMarkdown } from '../task-progress.js';
+} from '../feishu/messages.js';
+import { getProviderName } from '../providers/index.js';
+import { executeTask } from '../core/task-executor.js';
+import { renderTaskProgressMarkdown } from '../core/task-progress.js';
 import {
   createScheduleRun,
   markScheduleRunFailed,

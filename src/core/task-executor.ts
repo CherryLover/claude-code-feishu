@@ -1,7 +1,7 @@
-import { formatProgressCurrent } from './formatter.js';
-import { streamChat } from './provider.js';
+import { formatProgressCurrent } from '../feishu/formatter.js';
+import { streamChat } from '../providers/index.js';
 import { createTaskProgressState, TaskProgressState } from './task-progress.js';
-import { ClaudeEvent, StreamChatOptions, UsageInfo } from './types.js';
+import { ClaudeEvent, StreamChatOptions, UsageInfo } from '../providers/types.js';
 
 export type TaskAbortReason = 'user' | 'timeout' | 'external';
 export type TaskExecutionStatus = 'success' | 'error' | 'aborted';

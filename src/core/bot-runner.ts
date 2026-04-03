@@ -1,5 +1,5 @@
-import { config, validateConfig } from './config.js';
-import { startFeishuBot } from './feishu.js';
+import { config, validateConfig } from '../config.js';
+import { startFeishuBot } from '../feishu/client.js';
 
 export function runBot(): void {
   validateConfig();

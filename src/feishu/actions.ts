@@ -8,7 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { getFileCategory, getFileType } from './file-utils.js';
+import { getFileCategory, getFileType } from '../tools/file-utils.js';
 
 // 统一的返回类型
 export interface ActionResult {

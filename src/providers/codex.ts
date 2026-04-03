@@ -1,12 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { config } from './config.js';
+import { config } from '../config.js';
 import { ClaudeEvent, InputImage, StreamChatOptions } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PROJECT_ROOT = path.resolve(__dirname, '..');
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
 
 // 详细日志文件路径
 const LOG_DIR = path.join(PROJECT_ROOT, 'log');
@@ -139,7 +139,7 @@ function upsertTomlSection(configText: string, sectionName: string, sectionBody:
 function getRuntimePaths() {
   return {
     projectRoot: PROJECT_ROOT,
-    mcpServerPath: path.join(PROJECT_ROOT, 'dist', 'mcp-server.js'),
+    mcpServerPath: path.join(PROJECT_ROOT, 'dist', 'tools', 'mcp-server.js'),
     codexConfigPath: path.join(process.env.HOME || '/root', '.codex', 'config.toml'),
     nodePath: process.execPath,
   };

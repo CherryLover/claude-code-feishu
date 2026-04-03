@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { config } from './config.js';
+import { config } from '../config.js';
 import { ClaudeEvent, InputImage } from './types.js';
 
 // 详细日志文件路径

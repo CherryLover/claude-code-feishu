@@ -1,4 +1,4 @@
-import './bot-env.js';
+import './core/bot-env.js';
 import os from 'os';
 import path from 'path';
 

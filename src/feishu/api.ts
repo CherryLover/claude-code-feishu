@@ -6,7 +6,7 @@
  */
 
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { ActionResult } from './feishu-actions.js';
+import { ActionResult } from './actions.js';
 
 // --- 类型定义 ---
 

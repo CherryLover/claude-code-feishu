@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import cron from 'node-cron';
-import { config, validateConfig } from './config.js';
+import { config, validateConfig } from '../config.js';
 import {
   createSchedule,
   deleteSchedule,
@@ -11,9 +11,9 @@ import {
   listSchedules,
   setScheduleEnabled,
   updateSchedule,
-} from './scheduler/db.js';
-import { runScheduledTask } from './scheduler/runner.js';
-import { CreateScheduleInput, ScheduleTargetType, UpdateScheduleInput } from './scheduler/types.js';
+} from './db.js';
+import { runScheduledTask } from './runner.js';
+import { CreateScheduleInput, ScheduleTargetType, UpdateScheduleInput } from './types.js';
 
 interface ParsedArgs {
   command: string;

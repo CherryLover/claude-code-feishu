@@ -16,13 +16,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { sendFileToFeishu } from './feishu-actions.js';
+import { sendFileToFeishu } from '../feishu/actions.js';
 import {
   searchUser,
   sendMessageToUser,
   createTask,
   createCalendarEvent,
-} from './feishu-api.js';
+} from '../feishu/api.js';
 import {
   createScheduleAction,
   deleteScheduleAction,
@@ -31,7 +31,7 @@ import {
   listSchedulesAction,
   runScheduleNowAction,
   updateScheduleAction,
-} from './scheduler/actions.js';
+} from '../scheduler/actions.js';
 
 // --- 重定向 console.log 到 stderr（Lark SDK 的 error 级日志用的是 console.log，会污染 stdout）---
 

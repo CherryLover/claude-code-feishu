@@ -8,13 +8,13 @@
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { sendFileToFeishu } from './feishu-actions.js';
+import { sendFileToFeishu } from '../feishu/actions.js';
 import {
   searchUser,
   sendMessageToUser,
   createTask,
   createCalendarEvent,
-} from './feishu-api.js';
+} from '../feishu/api.js';
 import {
   createScheduleAction,
   deleteScheduleAction,
@@ -23,7 +23,7 @@ import {
   listSchedulesAction,
   runScheduleNowAction,
   updateScheduleAction,
-} from './scheduler/actions.js';
+} from '../scheduler/actions.js';
 
 export function createFeishuToolsServer(
   client: Lark.Client,
