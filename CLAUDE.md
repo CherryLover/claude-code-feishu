@@ -29,20 +29,70 @@ npm run start
                             格式化 Markdown → 飞书卡片消息
 ```
 
+## 项目结构
+
+```
+src/
+├── config.ts                   # 全局配置与环境变量
+├── index.ts                    # 入口，多 Provider 启动器
+│
+├── core/                       # 核心业务逻辑
+│   ├── bot-runner.ts          # 单 Provider 运行器
+│   ├── bot-worker.ts          # Worker 进程封装
+│   ├── bot-env.ts             # 环境变量覆盖逻辑
+│   ├── task-executor.ts       # AI 任务执行器
+│   ├── task-progress.ts       # 进度状态管理
+│   └── dedup.ts               # 消息去重（5分钟TTL）
+│
+├── providers/                  # AI Provider 层
+│   ├── index.ts               # Provider 路由
+│   ├── claude.ts              # Claude Agent SDK 封装
+│   ├── codex.ts               # Codex SDK 封装
+│   └── types.ts               # 统一事件类型定义
+│
+├── feishu/                     # 飞书集成层
+│   ├── client.ts              # WebSocket 客户端与消息分发
+│   ├── api.ts                 # 飞书 REST API 封装
+│   ├── messages.ts            # 消息发送与卡片更新
+│   ├── actions.ts             # 飞书操作（文件上传等）
+│   └── formatter.ts           # 工具调用格式化与卡片构建
+│
+├── scheduler/                  # 定时任务模块
+│   ├── index.ts               # 模块导出
+│   ├── cli.ts                 # CLI 管理工具
+│   ├── db.ts                  # SQLite 数据库操作
+│   ├── runner.ts              # 任务执行器
+│   ├── service.ts             # Cron 调度服务
+│   ├── actions.ts             # 任务管理操作
+│   └── types.ts               # 类型定义
+│
+└── tools/                      # MCP 工具层
+    ├── index.ts               # Claude Agent SDK MCP 工具
+    ├── mcp-server.ts          # Codex CLI stdio MCP 服务器
+    └── file-utils.ts          # 文件类型识别工具
+```
+
 ### 核心模块
 
-| 文件 | 职责 |
-|------|------|
-| `src/feishu.ts` | 飞书 WebSocket 连接、消息分发、会话管理、并发控制 |
-| `src/provider.ts` | AI Provider 路由，根据配置分发到 Claude 或 Codex |
-| `src/claude.ts` | Claude Agent SDK 封装，AsyncGenerator 流式输出事件 |
-| `src/codex-provider.ts` | Codex SDK 封装，AsyncGenerator 流式输出事件 |
-| `src/formatter.ts` | 工具调用格式化（Bash/Read/Write/Grep 等），飞书卡片构建 |
-| `src/tools.ts` | 自定义 MCP 工具（文件发送：图片、音频、文档） |
-| `src/file-utils.ts` | 文件类型识别（图片/音频/文档分类） |
-| `src/dedup.ts` | 消息去重（5 分钟 TTL，10000 条上限） |
-| `src/config.ts` | 环境变量读取与校验（dotenv override 模式） |
-| `src/types.ts` | ClaudeEvent 统一事件类型定义 |
+| 模块 | 文件 | 职责 |
+|------|------|------|
+| **入口** | `index.ts` | 多 Provider 启动器，Worker 管理 |
+| **核心** | `core/bot-runner.ts` | 单 Provider 运行器 |
+| | `core/task-executor.ts` | AI 任务执行，超时控制，进度回调 |
+| | `core/task-progress.ts` | 进度状态管理与渲染 |
+| | `core/dedup.ts` | 消息去重（5 分钟 TTL） |
+| **Provider** | `providers/index.ts` | AI Provider 路由 |
+| | `providers/claude.ts` | Claude Agent SDK 封装 |
+| | `providers/codex.ts` | Codex SDK 封装 |
+| | `providers/types.ts` | ClaudeEvent 统一事件类型 |
+| **飞书** | `feishu/client.ts` | WebSocket 连接、消息分发、会话管理 |
+| | `feishu/messages.ts` | 消息发送、卡片更新 |
+| | `feishu/formatter.ts` | 工具调用格式化、卡片构建 |
+| | `feishu/actions.ts` | 文件上传等操作 |
+| **工具** | `tools/index.ts` | 自定义 MCP 工具（文件发送） |
+| | `tools/file-utils.ts` | 文件类型识别 |
+| **定时任务** | `scheduler/service.ts` | Cron 调度服务 |
+| | `scheduler/runner.ts` | 任务执行与飞书推送 |
 
 ### 关键设计
 
