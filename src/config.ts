@@ -1,7 +1,6 @@
-import dotenv from 'dotenv';
+import './bot-env.js';
 import os from 'os';
 import path from 'path';
-dotenv.config({ override: true, quiet: true });
 
 export type FeishuReplyFormat = 'text' | 'md';
 
@@ -31,9 +30,19 @@ function resolvePath(value: string | undefined, defaultValue: string): string {
   return path.resolve(value);
 }
 
+function resolveDefaultSchedulerDbPath(): string {
+  const namespace = process.env.BOT_RUNTIME_NAMESPACE?.trim();
+  if (!namespace) {
+    return path.resolve(process.cwd(), 'data', 'scheduler.sqlite');
+  }
+
+  const safeNamespace = namespace.replace(/[^a-zA-Z0-9._-]/g, '_') || 'default';
+  return path.resolve(process.cwd(), 'data', `scheduler-${safeNamespace}.sqlite`);
+}
+
 export const config = {
-  // AI Provider: 'claude' | 'codex'
-  aiProvider: (process.env.AI_PROVIDER || 'claude') as 'claude' | 'codex',
+  // AI Provider: 'claude' | 'codex'（getter 确保 Worker 中 applyProviderEnvOverrides 后能读到最新值）
+  get aiProvider() { return (process.env.AI_PROVIDER || 'claude') as 'claude' | 'codex'; },
 
   // Claude API（SDK 自动读取 ANTHROPIC_API_KEY 和 ANTHROPIC_BASE_URL）
   // Codex API（SDK 自动读取 OPENAI_API_KEY 或 CODEX_API_KEY）
@@ -66,7 +75,7 @@ export const config = {
 
   // 定时任务（SQLite + 单实例调度）
   schedulerEnabled: parseBoolean(process.env.SCHEDULER_ENABLED, false),
-  schedulerDbPath: resolvePath(process.env.SCHEDULER_DB_PATH, path.resolve(process.cwd(), 'data', 'scheduler.sqlite')),
+  schedulerDbPath: resolvePath(process.env.SCHEDULER_DB_PATH, resolveDefaultSchedulerDbPath()),
   schedulerTaskTimeoutMs: parseNumber(process.env.SCHEDULER_TASK_TIMEOUT_MS, 10 * 60 * 1000),
 };
 

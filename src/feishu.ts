@@ -70,8 +70,16 @@ const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = path.join(PROJECT_ROOT, 'data');
 const LOG_DIR = path.join(PROJECT_ROOT, 'log');
-const FEISHU_RUNTIME_LOG_PATH = path.join(LOG_DIR, 'feishu-runtime.log');
-const TOPIC_SESSION_CACHE_DIR = path.join(DATA_DIR, 'topic-session-cache');
+const rawRuntimeNamespace = process.env.BOT_RUNTIME_NAMESPACE?.trim();
+const RUNTIME_NAMESPACE = rawRuntimeNamespace
+  ? rawRuntimeNamespace.replace(/[^a-zA-Z0-9._-]/g, '_') || 'default'
+  : '';
+const FEISHU_RUNTIME_LOG_PATH = RUNTIME_NAMESPACE
+  ? path.join(LOG_DIR, `feishu-runtime-${RUNTIME_NAMESPACE}.log`)
+  : path.join(LOG_DIR, 'feishu-runtime.log');
+const TOPIC_SESSION_CACHE_DIR = RUNTIME_NAMESPACE
+  ? path.join(DATA_DIR, 'topic-session-cache', RUNTIME_NAMESPACE)
+  : path.join(DATA_DIR, 'topic-session-cache');
 const TOPIC_SESSION_HISTORY_DIR = path.join(TOPIC_SESSION_CACHE_DIR, 'history');
 const TOPIC_SESSION_CACHE_PATH = path.join(TOPIC_SESSION_CACHE_DIR, 'index.json');
 const INSTANCE_TAG = process.env.INSTANCE_TAG || `${os.hostname()}:${process.pid}`;
@@ -124,7 +132,8 @@ const cardRawContent = new Map<string, string>(); // messageId -> rawContent
  * 构建会话级别的 key：话题群中按 chatId + threadId 隔离，非话题群 / 私聊仅用 chatId
  */
 function buildSessionKey(chatId: string, threadId?: string): string {
-  return threadId ? `${chatId}:${threadId}` : chatId;
+  const base = threadId ? `${chatId}:${threadId}` : chatId;
+  return `${config.aiProvider}_${base}`;
 }
 
 // 机器人自身的 open_id，用于群聊中判断是否 @了自己
@@ -1089,9 +1098,7 @@ async function sendStartupNotification(client: Lark.Client) {
       isOpenId ? 'open_id' : 'chat_id',
       userId,
       `✅ 机器人已启动
-允许用户: ${config.authorizedUserName || '未限制'}
-单用户工作目录: ${MESSAGE_WORKSPACE_DIR}
-Provider 备用目录: ${config.workspace}`,
+当前用户目录: ${MESSAGE_WORKSPACE_DIR}`,
     );
     console.log(`[启动通知] 发送成功`);
   } catch (error: unknown) {
@@ -1121,7 +1128,7 @@ async function handleMenuEvent(client: Lark.Client, eventKey: string, openId: st
     case 'clear': {
       console.log(`[菜单] 清除会话`);
       if (chatId) {
-        sessions.delete(chatId);
+        sessions.delete(buildSessionKey(chatId));
       }
       await sendCardToUser(client, openId, chatId, 'Claude Code', '✅ 会话已清除，开始新对话');
       break;
@@ -1129,9 +1136,10 @@ async function handleMenuEvent(client: Lark.Client, eventKey: string, openId: st
     case '/stop':
     case 'stop': {
       console.log(`[菜单] 停止处理`);
-      if (chatId && abortControllers.has(chatId)) {
-        abortReasons.set(chatId, 'user');
-        abortControllers.get(chatId)!.abort();
+      const stopKey = chatId ? buildSessionKey(chatId) : undefined;
+      if (stopKey && abortControllers.has(stopKey)) {
+        abortReasons.set(stopKey, 'user');
+        abortControllers.get(stopKey)!.abort();
         await sendCardToUser(client, openId, chatId, 'Claude Code', '⏹️ 已停止当前处理');
       } else {
         await sendCardToUser(client, openId, chatId, 'Claude Code', '💤 当前没有正在处理的任务');
@@ -1141,7 +1149,7 @@ async function handleMenuEvent(client: Lark.Client, eventKey: string, openId: st
     case '/status':
     case 'status': {
       console.log(`[菜单] 查询状态`);
-      const hasSession = chatId ? sessions.has(chatId) : false;
+      const hasSession = chatId ? sessions.has(buildSessionKey(chatId)) : false;
       await sendCardToUser(
         client,
         openId,

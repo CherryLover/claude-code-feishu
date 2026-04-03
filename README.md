@@ -83,7 +83,7 @@ npm run dev
 
 | 变量 | 必需 | 说明 |
 |------|:----:|------|
-| `AI_PROVIDER` | 否 | AI 提供商，`claude`（默认）或 `codex` |
+| `AI_PROVIDER` | 否 | AI 提供商，支持 `claude`、`codex`，也支持 `claude,codex` 同进程同时启动 |
 | `ANTHROPIC_API_KEY` | Claude 时必需 | Claude API 密钥 |
 | `ANTHROPIC_BASE_URL` | 否 | Claude API 代理地址 |
 | `OPENAI_API_KEY` | Codex 时必需 | OpenAI / Codex API 密钥 |
@@ -101,6 +101,8 @@ npm run dev
 | `FEISHU_REPLY_SHOW_USAGE` | 否 | 是否在进度卡尾部展示 Token/费用（Claude 额外显示上下文占用） |
 | `FEISHU_REPLY_ACK_REACTION` | 否 | 收到消息后是否给用户原消息添加 reaction |
 | `FEISHU_REPLY_ACK_EMOJI` | 否 | reaction 的 emoji 类型，默认 `OK` |
+
+多 Provider 单进程模式下，可继续使用现有前缀变量覆盖各自配置，例如：`CLAUDE_FEISHU_APP_ID`、`CLAUDE_FEISHU_APP_SECRET`、`CODEX_FEISHU_APP_ID`、`CODEX_FEISHU_APP_SECRET`、`CLAUDE_SCHEDULER_DB_PATH`、`CODEX_SCHEDULER_DB_PATH`。
 
 ## Docker 部署
 
