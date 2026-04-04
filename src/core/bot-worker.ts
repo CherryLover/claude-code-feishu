@@ -26,6 +26,8 @@ if (agentConfig) {
   process.env.FEISHU_APP_SECRET = agentConfig.feishu.appSecret;
   process.env.MESSAGE_WORKSPACE = agentConfig.workspace;
   process.env.WORKSPACE = agentConfig.workspace;
+  // 多 Agent 模式下不默认继承 provider 级 NOTIFY_USER_ID，避免把通知发到错误会话。
+  process.env.NOTIFY_USER_ID = agentConfig.notifyUserId || '';
   process.env.BOT_RUNTIME_NAMESPACE = agentConfig.id;
   process.env.INSTANCE_TAG = `${agentConfig.id}:${threadId}`;
 } else {

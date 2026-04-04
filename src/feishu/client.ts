@@ -1093,14 +1093,18 @@ async function sendStartupNotification(client: Lark.Client) {
   console.log(`[启动通知] 发送到 ${userId}`);
 
   try {
-    await sendTextMessage(
+    const messageId = await sendTextMessage(
       client,
       isOpenId ? 'open_id' : 'chat_id',
       userId,
       `✅ 机器人已启动
 当前用户目录: ${MESSAGE_WORKSPACE_DIR}`,
     );
-    console.log(`[启动通知] 发送成功`);
+    if (messageId) {
+      console.log(`[启动通知] 发送成功, message_id: ${messageId}`);
+    } else {
+      console.error(`[启动通知] 发送失败`);
+    }
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : '未知错误';
     console.error(`[启动通知] 发送失败: ${errMsg}`);

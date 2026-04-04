@@ -4,6 +4,7 @@ export interface AgentConfig {
   description?: string;
   provider: 'claude' | 'codex';
   workspace: string;
+  notifyUserId?: string;
   feishu: {
     appId: string;
     appSecret: string;

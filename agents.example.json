@@ -6,6 +6,7 @@
       "description": "负责前端代码开发和调试",
       "provider": "codex",
       "workspace": "/workspace/frontend",
+      "notifyUserId": "oc_xxxxxxxxxxxxxxxxxxxxxxxx",
       "feishu": {
         "appId": "cli_xxxxxxxxxx1",
         "appSecret": "your_app_secret_1"
@@ -17,6 +18,7 @@
       "description": "负责后端 API 开发",
       "provider": "claude",
       "workspace": "/workspace/backend",
+      "notifyUserId": "ou_xxxxxxxxxxxxxxxxxxxxxxxx",
       "feishu": {
         "appId": "cli_xxxxxxxxxx2",
         "appSecret": "your_app_secret_2"

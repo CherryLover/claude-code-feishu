@@ -75,6 +75,10 @@ function validateAgent(agent: AgentConfig): void {
     throw new Error(`Agent [${agent.name}] 缺少 workspace 字段`);
   }
 
+  if (agent.notifyUserId !== undefined && typeof agent.notifyUserId !== 'string') {
+    throw new Error(`Agent [${agent.name}] 的 notifyUserId 必须是字符串`);
+  }
+
   if (!agent.feishu || typeof agent.feishu !== 'object') {
     throw new Error(`Agent [${agent.name}] 缺少 feishu 配置`);
   }
