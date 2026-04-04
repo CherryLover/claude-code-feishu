@@ -11,3 +11,4 @@ data/*.sqlite-shm
 data/*.sqlite-wal
 data/topic-session-cache/
 workspace/
+agents.json
