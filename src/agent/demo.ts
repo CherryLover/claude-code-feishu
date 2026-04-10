@@ -8,8 +8,8 @@
 import 'dotenv/config';
 import OpenAI from 'openai';
 import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { dirname, resolve } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
+import { dirname, resolve, join } from 'path';
 import * as readline from 'readline';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -24,10 +24,16 @@ const client = new OpenAI({
 
 const MODEL = process.env.AGENT_MODEL || 'MiniMax-M2.7-highspeed';
 
-const SYSTEM_PROMPT = `You are a helpful AI assistant with access to tools.
+function buildSystemPrompt(): string {
+  let prompt = `You are a helpful AI assistant with access to tools.
 You can execute shell commands, read and write files to help the user.
 Working directory: ${process.cwd()}
 Always respond in the user's language.`;
+  if (skillInstructions) {
+    prompt += `\n\nYou also have the following skills available. Use them when relevant:\n${skillInstructions}`;
+  }
+  return prompt;
+}
 
 // ─── 内置工具定义 ─────────────────────────────────────────
 
@@ -157,8 +163,9 @@ interface McpServerConfigHttp {
 
 type McpServerConfig = McpServerConfigStdio | McpServerConfigHttp;
 
-interface McpConfig {
-  mcpServers: Record<string, McpServerConfig>;
+interface AgentConfig {
+  skillsDir?: string;
+  mcpServers?: Record<string, McpServerConfig>;
 }
 
 // 工具名 → MCP 客户端的映射
@@ -170,15 +177,53 @@ const mcpClients: Client[] = [];
 // MCP 工具转成的 OpenAI 格式
 let mcpTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
 
-async function loadMcpServers(): Promise<void> {
-  const configPath = resolve(process.cwd(), 'agent-mcp.json');
-  if (!existsSync(configPath)) {
-    console.log('  (no agent-mcp.json found, skipping MCP)');
+// ─── 统一配置加载 ────────────────────────────────────────
+
+function loadAgentConfig(): AgentConfig {
+  const configPath = resolve(process.cwd(), 'agent-config.json');
+  if (!existsSync(configPath)) return {};
+  return JSON.parse(readFileSync(configPath, 'utf-8'));
+}
+
+// ─── Skill 加载 ──────────────────────────────────────────
+
+let skillInstructions = '';
+
+function loadSkills(skillsDir: string): void {
+  if (!existsSync(skillsDir)) {
+    console.log(`  (skills dir not found: ${skillsDir})`);
     return;
   }
 
-  const config: McpConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
-  const serverEntries = Object.entries(config.mcpServers || {});
+  const entries = readdirSync(skillsDir, { withFileTypes: true });
+  const skills: { name: string; instructions: string }[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillMd = join(skillsDir, entry.name, 'SKILL.md');
+    if (!existsSync(skillMd)) continue;
+    try {
+      const content = readFileSync(skillMd, 'utf-8');
+      const nameMatch = content.match(/^---[\s\S]*?name:\s*(.+)$/m);
+      const name = nameMatch?.[1]?.trim() || entry.name;
+      skills.push({ name, instructions: content });
+    } catch (err: any) {
+      console.error(`  ✗ skill ${entry.name}: ${err.message}`);
+    }
+  }
+
+  if (skills.length > 0) {
+    skillInstructions = skills
+      .map(s => `\n--- Skill: ${s.name} ---\n${s.instructions}`)
+      .join('\n');
+    console.log(`  ✓ skills: ${skills.length} loaded (${skills.map(s => s.name).join(', ')})`);
+  }
+}
+
+// ─── MCP 加载 ────────────────────────────────────────────
+
+async function loadMcpServers(mcpServers: Record<string, McpServerConfig>): Promise<void> {
+  const serverEntries = Object.entries(mcpServers);
 
   if (serverEntries.length === 0) return;
 
@@ -293,7 +338,7 @@ async function agentLoop(userMessage: string): Promise<void> {
     const response = await client.chat.completions.create({
       model: MODEL,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: buildSystemPrompt() },
         ...conversationHistory,
       ],
       tools: allTools,
@@ -346,8 +391,18 @@ async function agentLoop(userMessage: string): Promise<void> {
 async function main() {
   console.log(`Agent ready | model: ${MODEL}`);
 
+  // 加载配置
+  const config = loadAgentConfig();
+
+  // 加载 Skills
+  if (config.skillsDir) {
+    loadSkills(config.skillsDir);
+  }
+
   // 加载 MCP 服务器
-  await loadMcpServers();
+  if (config.mcpServers) {
+    await loadMcpServers(config.mcpServers);
+  }
 
   console.log('Type your message, /clear to reset, /exit to quit.\n');
 

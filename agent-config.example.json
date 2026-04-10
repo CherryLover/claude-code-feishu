@@ -1,4 +1,5 @@
 {
+  "skillsDir": "/path/to/skills",
   "mcpServers": {
     "example-stdio": {
       "type": "stdio",
