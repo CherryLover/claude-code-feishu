@@ -12,3 +12,4 @@ data/*.sqlite-wal
 data/topic-session-cache/
 workspace/
 agents.json
+agent-mcp.json
