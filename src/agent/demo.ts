@@ -29,8 +29,8 @@ function buildSystemPrompt(): string {
 You can execute shell commands, read and write files to help the user.
 Working directory: ${process.cwd()}
 Always respond in the user's language.`;
-  if (skillInstructions) {
-    prompt += `\n\nYou also have the following skills available. Use them when relevant:\n${skillInstructions}`;
+  if (skillSummary) {
+    prompt += `\n\nYou have the following skills available. When a task matches a skill, use the load_skill tool to load its full instructions before proceeding.\n${skillSummary}`;
   }
   return prompt;
 }
@@ -97,6 +97,20 @@ const builtinTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'load_skill',
+      description: 'Load the full instructions of a skill by name. Use this before executing a skill-related task.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'The skill name to load' },
+        },
+        required: ['name'],
+      },
+    },
+  },
 ];
 
 // ─── 内置工具执行 ─────────────────────────────────────────
@@ -137,6 +151,15 @@ function executeBuiltinTool(name: string, args: Record<string, unknown>): string
         }
         writeFileSync(editPath, content.replace(oldStr, newStr), 'utf-8');
         return `Edited ${editPath}`;
+      }
+      case 'load_skill': {
+        const skillName = args.name as string;
+        const content = skillFullContent.get(skillName);
+        if (!content) {
+          const available = [...skillFullContent.keys()].join(', ');
+          return `Error: skill "${skillName}" not found. Available: ${available}`;
+        }
+        return content;
       }
       default:
         return `Unknown tool: ${name}`;
@@ -187,7 +210,10 @@ function loadAgentConfig(): AgentConfig {
 
 // ─── Skill 加载 ──────────────────────────────────────────
 
-let skillInstructions = '';
+// name + description 摘要（注入 system prompt）
+let skillSummary = '';
+// name → 完整 SKILL.md 内容（按需加载时返回）
+const skillFullContent = new Map<string, string>();
 
 function loadSkills(skillsDir: string): void {
   if (!existsSync(skillsDir)) {
@@ -196,7 +222,7 @@ function loadSkills(skillsDir: string): void {
   }
 
   const entries = readdirSync(skillsDir, { withFileTypes: true });
-  const skills: { name: string; instructions: string }[] = [];
+  const summaries: string[] = [];
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -205,18 +231,19 @@ function loadSkills(skillsDir: string): void {
     try {
       const content = readFileSync(skillMd, 'utf-8');
       const nameMatch = content.match(/^---[\s\S]*?name:\s*(.+)$/m);
+      const descMatch = content.match(/^---[\s\S]*?description:\s*(.+)$/m);
       const name = nameMatch?.[1]?.trim() || entry.name;
-      skills.push({ name, instructions: content });
+      const desc = descMatch?.[1]?.trim() || '';
+      skillFullContent.set(name, content);
+      summaries.push(`- ${name}: ${desc}`);
     } catch (err: any) {
       console.error(`  ✗ skill ${entry.name}: ${err.message}`);
     }
   }
 
-  if (skills.length > 0) {
-    skillInstructions = skills
-      .map(s => `\n--- Skill: ${s.name} ---\n${s.instructions}`)
-      .join('\n');
-    console.log(`  ✓ skills: ${skills.length} loaded (${skills.map(s => s.name).join(', ')})`);
+  if (summaries.length > 0) {
+    skillSummary = summaries.join('\n');
+    console.log(`  ✓ skills: ${summaries.length} loaded (${[...skillFullContent.keys()].join(', ')})`);
   }
 }
 
@@ -307,7 +334,7 @@ async function closeMcpClients(): Promise<void> {
 
 // ─── 统一工具执行 ────────────────────────────────────────
 
-const BUILTIN_TOOLS = new Set(['bash', 'read_file', 'write_file', 'edit_file']);
+const BUILTIN_TOOLS = new Set(['bash', 'read_file', 'write_file', 'edit_file', 'load_skill']);
 
 async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
   if (BUILTIN_TOOLS.has(name)) {
@@ -315,6 +342,11 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   }
   if (mcpToolMap.has(name)) {
     return executeMcpTool(name, args);
+  }
+  // 兜底：如果调用的工具名匹配某个 skill，自动加载 skill 指令返回
+  const skillContent = skillFullContent.get(name);
+  if (skillContent) {
+    return `"${name}" is not a tool, it's a skill. Here are the full instructions for this skill, follow them to complete the task:\n\n${skillContent}`;
   }
   return `Unknown tool: ${name}`;
 }
