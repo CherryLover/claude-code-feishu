@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "example-stdio": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["/path/to/mcp-server.py"],
+      "env": {
+        "SOME_VAR": "value"
+      }
+    },
+    "example-http": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "API_KEY": "your-api-key"
+      }
+    }
+  }
+}

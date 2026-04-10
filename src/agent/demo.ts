@@ -1,7 +1,7 @@
 /**
  * 单文件 AI Agent Demo
  *
- * 核心：循环执行 + 工具调用 + 交互式对话
+ * 核心：循环执行 + 工具调用 + MCP 支持 + 交互式对话
  * 运行：npx tsx src/agent/demo.ts
  */
 
@@ -9,22 +9,11 @@ import 'dotenv/config';
 import OpenAI from 'openai';
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { dirname, resolve } from 'path';
 import * as readline from 'readline';
-
-// ─── 启动问候语 ─────────────────────────────────────────
-
-const GREETINGS = [
-  '你好！我是你的 AI 助手，有什么我可以帮你的吗？',
-  '嗨！我准备好了，随时可以开始工作。有什么需要尽管说～',
-  '早上好！今天有什么想做的？',
-  '你好呀！我是你的命令行助手，来试试吧～',
-  '启动完成！我在这里待命，随时听候差遣。',
-];
-
-function getRandomGreeting(): string {
-  return GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
-}
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 // ─── 配置 ───────────────────────────────────────────────
 
@@ -40,9 +29,9 @@ You can execute shell commands, read and write files to help the user.
 Working directory: ${process.cwd()}
 Always respond in the user's language.`;
 
-// ─── 工具定义 ────────────────────────────────────────────
+// ─── 内置工具定义 ─────────────────────────────────────────
 
-const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+const builtinTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
@@ -104,9 +93,9 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   },
 ];
 
-// ─── 工具执行 ────────────────────────────────────────────
+// ─── 内置工具执行 ─────────────────────────────────────────
 
-function executeTool(name: string, args: Record<string, unknown>): string {
+function executeBuiltinTool(name: string, args: Record<string, unknown>): string {
   try {
     switch (name) {
       case 'bash': {
@@ -151,12 +140,149 @@ function executeTool(name: string, args: Record<string, unknown>): string {
   }
 }
 
+// ─── MCP 客户端管理 ──────────────────────────────────────
+
+interface McpServerConfigStdio {
+  type: 'stdio';
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+interface McpServerConfigHttp {
+  type: 'http';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+type McpServerConfig = McpServerConfigStdio | McpServerConfigHttp;
+
+interface McpConfig {
+  mcpServers: Record<string, McpServerConfig>;
+}
+
+// 工具名 → MCP 客户端的映射
+const mcpToolMap = new Map<string, Client>();
+// 工具名 → MCP 原始工具名的映射
+const mcpToolOriginalName = new Map<string, string>();
+// 所有 MCP 客户端（用于关闭）
+const mcpClients: Client[] = [];
+// MCP 工具转成的 OpenAI 格式
+let mcpTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [];
+
+async function loadMcpServers(): Promise<void> {
+  const configPath = resolve(process.cwd(), 'agent-mcp.json');
+  if (!existsSync(configPath)) {
+    console.log('  (no agent-mcp.json found, skipping MCP)');
+    return;
+  }
+
+  const config: McpConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+  const serverEntries = Object.entries(config.mcpServers || {});
+
+  if (serverEntries.length === 0) return;
+
+  for (const [serverName, serverConfig] of serverEntries) {
+    try {
+      console.log(`  connecting to MCP server: ${serverName}...`);
+
+      let transport;
+      if (serverConfig.type === 'http') {
+        transport = new StreamableHTTPClientTransport(
+          new URL(serverConfig.url),
+          {
+            requestInit: serverConfig.headers
+              ? { headers: serverConfig.headers }
+              : undefined,
+          },
+        );
+      } else {
+        transport = new StdioClientTransport({
+          command: serverConfig.command,
+          args: serverConfig.args || [],
+          env: { ...process.env, ...(serverConfig.env || {}) } as Record<string, string>,
+        });
+      }
+
+      const mcpClient = new Client({
+        name: `agent-demo/${serverName}`,
+        version: '1.0.0',
+      });
+
+      await mcpClient.connect(transport);
+      mcpClients.push(mcpClient);
+
+      // 拉取工具列表
+      const { tools: serverTools } = await mcpClient.listTools();
+
+      for (const tool of serverTools) {
+        // 加前缀避免和内置工具或其他 MCP 服务器的工具重名
+        const toolName = `mcp__${serverName}__${tool.name}`;
+        mcpToolMap.set(toolName, mcpClient);
+        mcpToolOriginalName.set(toolName, tool.name);
+
+        mcpTools.push({
+          type: 'function',
+          function: {
+            name: toolName,
+            description: `[MCP:${serverName}] ${tool.description || tool.name}`,
+            parameters: tool.inputSchema as any || { type: 'object', properties: {} },
+          },
+        });
+      }
+
+      console.log(`  ✓ ${serverName}: ${serverTools.length} tools loaded`);
+    } catch (err: any) {
+      console.error(`  ✗ ${serverName}: ${err.message || err}`);
+    }
+  }
+}
+
+async function executeMcpTool(toolName: string, args: Record<string, unknown>): Promise<string> {
+  const mcpClient = mcpToolMap.get(toolName);
+  if (!mcpClient) return `Error: MCP tool not found: ${toolName}`;
+
+  const originalName = mcpToolOriginalName.get(toolName)!;
+
+  try {
+    const result = await mcpClient.callTool({ name: originalName, arguments: args });
+    // MCP 返回 content 数组，取第一个文本
+    const textContent = (result.content as any[])?.find((c: any) => c.type === 'text');
+    return textContent?.text || JSON.stringify(result.content);
+  } catch (err: any) {
+    return `Error: ${err.message || err}`;
+  }
+}
+
+async function closeMcpClients(): Promise<void> {
+  for (const c of mcpClients) {
+    try { await c.close(); } catch { /* ignore */ }
+  }
+}
+
+// ─── 统一工具执行 ────────────────────────────────────────
+
+const BUILTIN_TOOLS = new Set(['bash', 'read_file', 'write_file', 'edit_file']);
+
+async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+  if (BUILTIN_TOOLS.has(name)) {
+    return executeBuiltinTool(name, args);
+  }
+  if (mcpToolMap.has(name)) {
+    return executeMcpTool(name, args);
+  }
+  return `Unknown tool: ${name}`;
+}
+
 // ─── Agent 循环 ──────────────────────────────────────────
 
 const conversationHistory: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
 
 async function agentLoop(userMessage: string): Promise<void> {
   conversationHistory.push({ role: 'user', content: userMessage });
+
+  // 合并内置工具和 MCP 工具
+  const allTools = [...builtinTools, ...mcpTools];
 
   let step = 0;
   const maxSteps = 30;
@@ -170,7 +296,7 @@ async function agentLoop(userMessage: string): Promise<void> {
         { role: 'system', content: SYSTEM_PROMPT },
         ...conversationHistory,
       ],
-      tools,
+      tools: allTools,
       max_tokens: 4096,
     });
 
@@ -197,7 +323,7 @@ async function agentLoop(userMessage: string): Promise<void> {
 
       console.log(`\n  [tool] ${fnName}: ${JSON.stringify(fnArgs).slice(0, 100)}`);
 
-      const result = executeTool(fnName, fnArgs);
+      const result = await executeTool(fnName, fnArgs);
       const preview = result.length > 200 ? result.slice(0, 200) + '...' : result;
       console.log(`  [result] ${preview}`);
 
@@ -219,7 +345,10 @@ async function agentLoop(userMessage: string): Promise<void> {
 
 async function main() {
   console.log(`Agent ready | model: ${MODEL}`);
-  console.log(`💬 ${getRandomGreeting()}`);
+
+  // 加载 MCP 服务器
+  await loadMcpServers();
+
   console.log('Type your message, /clear to reset, /exit to quit.\n');
 
   const rl = readline.createInterface({
@@ -235,6 +364,7 @@ async function main() {
     if (!input) { rl.prompt(); return; }
 
     if (input === '/exit') {
+      await closeMcpClients();
       console.log('Bye.');
       rl.close();
       process.exit(0);
