@@ -23,7 +23,6 @@
 - **并发控制** — 同一聊天同时只处理一条消息，避免混乱
 - **消息去重** — 5 分钟 TTL，防止超时重推导致重复处理
 - **定时任务** — 基于 SQLite 持久化 cron 配置，定时执行 AI 任务并主动推送飞书报告
-- **多实例部署** — Docker Compose 支持多个机器人实例，各自独立配置
 
 ## 快速开始
 
@@ -103,37 +102,6 @@ npm run dev
 | `FEISHU_REPLY_ACK_EMOJI` | 否 | reaction 的 emoji 类型，默认 `OK` |
 
 多 Provider 单进程模式下，可继续使用现有前缀变量覆盖各自配置，例如：`CLAUDE_FEISHU_APP_ID`、`CLAUDE_FEISHU_APP_SECRET`、`CODEX_FEISHU_APP_ID`、`CODEX_FEISHU_APP_SECRET`、`CLAUDE_SCHEDULER_DB_PATH`、`CODEX_SCHEDULER_DB_PATH`。
-
-## Docker 部署
-
-### 单实例
-
-```bash
-docker run -d \
-  --name claude-feishu-bot \
-  --restart unless-stopped \
-  -e AI_PROVIDER=claude \
-  -e ANTHROPIC_API_KEY=sk-ant-xxx \
-  -e FEISHU_APP_ID=cli_xxx \
-  -e FEISHU_APP_SECRET=xxx \
-  -v /path/to/your/project:/workspace \
-  ghcr.io/cherrylover/claude-code-feishu:latest
-```
-
-### 双 Provider 部署（Docker Compose）
-
-同时运行 Claude 和 Codex 两个机器人，各自绑定独立的飞书应用：
-
-```bash
-# 配置环境变量
-cp .env.docker.example .env
-# 编辑 .env 填入两组飞书应用和 API 配置
-
-# 启动
-docker compose up -d
-```
-
-每个实例独立配置 AI Provider、API Key、飞书应用凭证和工作目录映射。
 
 ## 使用方式
 
@@ -235,27 +203,43 @@ npm run schedule -- runs --id daily-report
 
 ```
 src/
-├── index.ts            # 入口，初始化与启动
-├── config.ts           # 环境变量读取与校验
-├── types.ts            # ClaudeEvent 类型定义
-├── dedup.ts            # 消息去重（5 分钟 TTL）
-├── provider.ts         # AI Provider 路由（Claude / Codex）
-├── claude.ts           # Claude Agent SDK 封装，流式事件处理
-├── codex-provider.ts   # Codex SDK 封装，流式事件处理
-├── feishu.ts           # 飞书 WebSocket 连接、消息分发、会话管理
-├── feishu-messages.ts  # 飞书消息发送/卡片更新公共函数
-├── formatter.ts        # 工具调用格式化、飞书卡片构建
-├── scheduler-cli.ts    # 本地定时任务管理 CLI
-├── task-executor.ts    # AI 执行公共入口（手动消息 / 定时任务复用）
-├── task-progress.ts    # 执行进度状态与卡片渲染
-├── tools.ts            # 自定义 MCP 工具（文件发送）
-└── file-utils.ts       # 文件类型识别工具
-
-src/scheduler/
-├── db.ts               # SQLite 建表与 CRUD
-├── runner.ts           # 定时任务执行与飞书报告推送
-├── service.ts          # cron 注册与运行时调度
-└── types.ts            # 定时任务类型定义
+├── config.ts                   # 全局配置与环境变量
+├── index.ts                    # 入口，多 Provider 启动器
+│
+├── core/                       # 核心业务逻辑
+│   ├── bot-runner.ts          # 单 Provider 运行器
+│   ├── bot-worker.ts          # Worker 进程封装
+│   ├── bot-env.ts             # 环境变量覆盖逻辑
+│   ├── task-executor.ts       # AI 任务执行器
+│   ├── task-progress.ts       # 进度状态管理
+│   └── dedup.ts               # 消息去重（5 分钟 TTL）
+│
+├── providers/                  # AI Provider 层
+│   ├── index.ts               # Provider 路由
+│   ├── claude.ts              # Claude Agent SDK 封装
+│   ├── codex.ts               # Codex SDK 封装
+│   └── types.ts               # 统一事件类型定义
+│
+├── feishu/                     # 飞书集成层
+│   ├── client.ts              # WebSocket 客户端与消息分发
+│   ├── api.ts                 # 飞书 REST API 封装
+│   ├── messages.ts            # 消息发送与卡片更新
+│   ├── actions.ts             # 飞书操作（文件上传等）
+│   └── formatter.ts           # 工具调用格式化与卡片构建
+│
+├── scheduler/                  # 定时任务模块
+│   ├── index.ts               # 模块导出
+│   ├── cli.ts                 # CLI 管理工具
+│   ├── db.ts                  # SQLite 数据库操作
+│   ├── runner.ts              # 任务执行器
+│   ├── service.ts             # Cron 调度服务
+│   ├── actions.ts             # 任务管理操作
+│   └── types.ts               # 类型定义
+│
+└── tools/                      # MCP 工具层
+    ├── index.ts               # Claude Agent SDK MCP 工具
+    ├── mcp-server.ts          # Codex CLI stdio MCP 服务器
+    └── file-utils.ts          # 文件类型识别工具
 ```
 
 ## 架构
