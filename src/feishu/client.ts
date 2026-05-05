@@ -1251,6 +1251,68 @@ async function handleMessage(client: Lark.Client, data: any) {
 
   await addAckReaction(client, incomingMessageId);
 
+  // 在排队前优先识别快捷命令，避免 /stop /clear /status 被 processing.has 阻塞，
+  // 等当前任务跑完再出队时 abortController 已被清理，导致 /stop 永远拿到「无任务」回复。
+  if (message.message_type === 'text') {
+    let cmdText = '';
+    try {
+      const parsed = JSON.parse(message.content);
+      cmdText = (parsed.text || '').trim();
+    } catch {
+      cmdText = '';
+    }
+    if (chatType === 'group' && data.message?.mentions) {
+      for (const mention of data.message.mentions) {
+        cmdText = cmdText.replace(`@_user_${mention.id?.union_id}`, '').trim();
+        if (mention.name) {
+          cmdText = cmdText.replace(`@${mention.name}`, '').trim();
+        }
+      }
+    }
+
+    if (cmdText === '/clear' || cmdText === '/new') {
+      console.log(`[命令] 清除会话 | sessionKey: ${sessionKey}`);
+      sessions.delete(sessionKey);
+      if (isTopicGroup && threadId) {
+        upsertTopicSessionCacheEntry({
+          sessionKey,
+          chatId,
+          threadId,
+          sessionId: null,
+          contextStartTimeMs: Date.now(),
+        });
+      }
+      await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '✅ 会话已清除，开始新对话', isTopicGroup);
+      return;
+    }
+
+    if (cmdText === '/stop') {
+      console.log(`[命令] 停止处理 | sessionKey: ${sessionKey}`);
+      if (abortControllers.has(sessionKey)) {
+        abortReasons.set(sessionKey, 'user');
+        abortControllers.get(sessionKey)!.abort();
+        await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '⏹️ 已停止当前处理', isTopicGroup);
+      } else {
+        await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '💤 当前没有正在处理的任务', isTopicGroup);
+      }
+      return;
+    }
+
+    if (cmdText === '/status') {
+      console.log(`[命令] 查询状态 | sessionKey: ${sessionKey}`);
+      const hasSession = sessions.has(sessionKey);
+      await sendResponseForIncoming(
+        client,
+        chatId,
+        incomingMessageId,
+        providerName,
+        hasSession ? '📍 当前有活跃会话' : '💤 无活跃会话',
+        isTopicGroup,
+      );
+      return;
+    }
+  }
+
   if (processing.has(sessionKey)) {
     console.log(`[跳过] 会话 ${sessionKey} 正在处理中`);
     pendingMessages.set(sessionKey, data);
@@ -1358,48 +1420,6 @@ async function handleMessage(client: Lark.Client, data: any) {
   }
 
   console.log(`[消息内容] "${text}"`);
-
-  if (text === '/clear' || text === '/new') {
-    console.log(`[命令] 清除会话 | sessionKey: ${sessionKey}`);
-    sessions.delete(sessionKey);
-    if (isTopicGroup && threadId) {
-      upsertTopicSessionCacheEntry({
-        sessionKey,
-        chatId,
-        threadId,
-        sessionId: null,
-        contextStartTimeMs: Date.now(),
-      });
-    }
-    await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '✅ 会话已清除，开始新对话', isTopicGroup);
-    return;
-  }
-
-  if (text === '/stop') {
-    console.log(`[命令] 停止处理 | sessionKey: ${sessionKey}`);
-    if (abortControllers.has(sessionKey)) {
-      abortReasons.set(sessionKey, 'user');
-      abortControllers.get(sessionKey)!.abort();
-      await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '⏹️ 已停止当前处理', isTopicGroup);
-    } else {
-      await sendResponseForIncoming(client, chatId, incomingMessageId, providerName, '💤 当前没有正在处理的任务', isTopicGroup);
-    }
-    return;
-  }
-
-  if (text === '/status') {
-    console.log(`[命令] 查询状态 | sessionKey: ${sessionKey}`);
-    const hasSession = sessions.has(sessionKey);
-    await sendResponseForIncoming(
-      client,
-      chatId,
-      incomingMessageId,
-      providerName,
-      hasSession ? '📍 当前有活跃会话' : '💤 无活跃会话',
-      isTopicGroup,
-    );
-    return;
-  }
 
   if (senderName && senderOpenId) {
     console.log(`[消息上下文] 当前发送者: ${senderName} (${senderOpenId})`);
