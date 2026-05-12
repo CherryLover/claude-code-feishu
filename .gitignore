@@ -13,3 +13,4 @@ data/topic-session-cache/
 workspace/
 agents.json
 agent-config.json
+.DS_Store
