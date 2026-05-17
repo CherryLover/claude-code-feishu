@@ -45,13 +45,12 @@ export class AgentInstance {
 
     console.log(`🚀 启动 Agent [${this.config.name}]`);
     console.log(`   - ID: ${this.config.id}`);
-    console.log(`   - Provider: ${this.config.provider}`);
+    console.log(`   - 凭证: ${this.config.credential}`);
     console.log(`   - Workspace: ${this.config.workspace}`);
     console.log(`   - 飞书 APP_ID: ${this.config.feishu.appId}`);
 
     return new Promise((resolve, reject) => {
       const workerData = {
-        provider: this.config.provider,
         agentConfig: this.config,
       };
 

@@ -4,7 +4,7 @@
       "id": "project-frontend",
       "name": "前端项目助手",
       "description": "负责前端代码开发和调试",
-      "provider": "codex",
+      "credential": "codex-api",
       "workspace": "/workspace/frontend",
       "notifyUserId": "oc_xxxxxxxxxxxxxxxxxxxxxxxx",
       "feishu": {
@@ -16,7 +16,7 @@
       "id": "project-backend",
       "name": "后端项目助手",
       "description": "负责后端 API 开发",
-      "provider": "claude",
+      "credential": "claude-official",
       "workspace": "/workspace/backend",
       "notifyUserId": "ou_xxxxxxxxxxxxxxxxxxxxxxxx",
       "feishu": {
@@ -28,7 +28,7 @@
       "id": "devops",
       "name": "运维助手",
       "description": "负责部署和运维相关工作",
-      "provider": "claude",
+      "credential": "claude-thirdparty",
       "workspace": "/workspace/devops",
       "feishu": {
         "appId": "cli_xxxxxxxxxx3",

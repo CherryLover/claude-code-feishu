@@ -135,7 +135,7 @@ function renderTaskTable() {
 
 function renderNewTaskModal() {
   const agentOptions = agents.map(a => 
-    `<option value="${a.id}" data-workspace="${a.workspace}">${a.name} (${a.provider})</option>`
+    `<option value="${a.id}" data-workspace="${a.workspace}">${a.name} (${a.engine})</option>`
   ).join('');
   const defaultWorkspace = agents[0]?.workspace || '';
 

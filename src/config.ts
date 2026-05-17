@@ -85,15 +85,6 @@ export function validateConfig() {
     process.exit(1);
   }
 
-  if (config.aiProvider === 'codex') {
-    if (!process.env.OPENAI_API_KEY && !process.env.CODEX_API_KEY) {
-      console.error('缺少 Codex API 配置: OPENAI_API_KEY 或 CODEX_API_KEY');
-      process.exit(1);
-    }
-  } else {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      console.error('缺少 Claude API 配置: ANTHROPIC_API_KEY');
-      process.exit(1);
-    }
-  }
+  // AI 凭证由 credentials.json 校验与注入（subscription 模式本就没有 key），
+  // 这里不再要求环境变量中存在 API key。
 }

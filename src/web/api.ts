@@ -2,6 +2,13 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { streamSSE } from 'hono/streaming';
 import { loadAgentsConfig } from '../agents/loader.js';
+import {
+  loadCredentialsConfig,
+  resolveCredential,
+  applyCredentialEnv,
+  snapshotCredentialEnv,
+  restoreCredentialEnv,
+} from '../agents/credentials.js';
 import { taskStore } from './store.js';
 import { streamChat } from '../providers/index.js';
 import { CreateTaskRequest, SendMessageRequest, StreamEvent, MessageBlock } from './types.js';
@@ -13,13 +20,18 @@ app.use('/*', cors());
 // 获取 Agent 列表
 app.get('/api/agents', (c) => {
   const config = loadAgentsConfig();
-  const agents = config.agents.map(a => ({
-    id: a.id,
-    name: a.name,
-    description: a.description,
-    provider: a.provider,
-    workspace: a.workspace,
-  }));
+  const credentials = loadCredentialsConfig();
+  const agents = config.agents.map(a => {
+    const cred = credentials.credentials.find(c => c.id === a.credential);
+    return {
+      id: a.id,
+      name: a.name,
+      description: a.description,
+      credential: a.credential,
+      engine: cred?.engine,
+      workspace: a.workspace,
+    };
+  });
   return c.json(agents);
 });
 
@@ -101,9 +113,10 @@ app.post('/api/tasks/:id/messages', async (c) => {
   const abortController = new AbortController();
   taskStore.setAbortController(taskId, abortController);
 
-  // 临时设置环境变量以使用正确的 provider
-  const originalProvider = process.env.AI_PROVIDER;
-  process.env.AI_PROVIDER = agent.provider;
+  // 临时切换到该 Agent 引用的凭证（单进程，结束后还原）
+  const credential = resolveCredential(agent.credential, loadCredentialsConfig());
+  const credentialSnapshot = snapshotCredentialEnv();
+  applyCredentialEnv(credential);
 
   return streamSSE(c, async (stream) => {
     const sendEvent = (event: StreamEvent) => {
@@ -205,7 +218,7 @@ app.post('/api/tasks/:id/messages', async (c) => {
       sendEvent({ type: 'error', message });
       taskStore.updateTask(taskId, { status: 'pending' });
     } finally {
-      process.env.AI_PROVIDER = originalProvider;
+      restoreCredentialEnv(credentialSnapshot);
       taskStore.removeAbortController(taskId);
     }
   });

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { AgentsConfig, AgentConfig } from './types.js';
+import { loadCredentialsConfig, resolveCredential } from './credentials.js';
 
 export function loadAgentsConfig(): AgentsConfig {
   const configPath = path.resolve(process.cwd(), 'agents.json');
@@ -16,6 +17,7 @@ export function loadAgentsConfig(): AgentsConfig {
     const config = JSON.parse(content) as AgentsConfig;
 
     validateConfig(config);
+    validateCredentialRefs(config);
 
     return config;
   } catch (error) {
@@ -67,8 +69,8 @@ function validateAgent(agent: AgentConfig): void {
     throw new Error(`Agent [${agent.id}] 缺少 name 字段`);
   }
 
-  if (!agent.provider || !['claude', 'codex'].includes(agent.provider)) {
-    throw new Error(`Agent [${agent.name}] 的 provider 必须是 claude 或 codex`);
+  if (!agent.credential || typeof agent.credential !== 'string') {
+    throw new Error(`Agent [${agent.name}] 缺少 credential 字段（引用 credentials.json 中的凭证 id）`);
   }
 
   if (!agent.workspace || typeof agent.workspace !== 'string') {
@@ -89,5 +91,13 @@ function validateAgent(agent: AgentConfig): void {
 
   if (!agent.feishu.appSecret || typeof agent.feishu.appSecret !== 'string') {
     throw new Error(`Agent [${agent.name}] 缺少 feishu.appSecret`);
+  }
+}
+
+// 启动时即校验每个 Agent 引用的 credential 是否真实存在，尽早失败
+function validateCredentialRefs(config: AgentsConfig): void {
+  const credentials = loadCredentialsConfig();
+  for (const agent of config.agents) {
+    resolveCredential(agent.credential, credentials);
   }
 }

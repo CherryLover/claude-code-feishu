@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
+import { getActiveCredential } from '../agents/credentials.js';
 import { ClaudeEvent, InputImage } from './types.js';
 
 // 详细日志文件路径
@@ -195,6 +196,11 @@ export async function* streamClaudeChat(
     permissionMode: 'bypassPermissions',
     settingSources: ['project', 'user'],
   };
+
+  const credentialModel = getActiveCredential()?.model;
+  if (credentialModel) {
+    queryOptions.model = credentialModel;
+  }
 
   if (sessionId) {
     queryOptions.resume = sessionId;

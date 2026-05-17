@@ -68,18 +68,6 @@ function assignEnvFromOverride(provider: AiProvider, key: string): void {
   }
 }
 
-function applyProviderApiEnv(provider: AiProvider): void {
-  if (provider === 'claude') {
-    assignEnvFromOverride(provider, 'ANTHROPIC_API_KEY');
-    assignEnvFromOverride(provider, 'ANTHROPIC_BASE_URL');
-    return;
-  }
-
-  assignEnvFromOverride(provider, 'OPENAI_API_KEY');
-  assignEnvFromOverride(provider, 'OPENAI_BASE_URL');
-  assignEnvFromOverride(provider, 'CODEX_API_KEY');
-}
-
 function applyProviderCommonEnv(provider: AiProvider): void {
   for (const key of COMMON_OVERRIDE_KEYS) {
     assignEnvFromOverride(provider, key);
@@ -95,6 +83,7 @@ export function applyProviderEnvOverrides(provider: AiProvider, options: ApplyPr
     delete process.env.BOT_RUNTIME_NAMESPACE;
   }
 
-  applyProviderApiEnv(provider);
+  // 注意：AI 凭证（ANTHROPIC_*/OPENAI_*/CODEX_*）不再由环境变量控制，
+  // 改由 credentials.json 经 applyCredentialEnv 注入。
   applyProviderCommonEnv(provider);
 }

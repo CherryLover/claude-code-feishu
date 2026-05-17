@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../config.js';
+import { getActiveCredential } from '../agents/credentials.js';
 import { ClaudeEvent, InputImage, StreamChatOptions } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -245,6 +246,10 @@ function buildCodexTurnInput(prompt: string, inputImages?: InputImage[]): string
 
 // Codex SDK 是 ESM-only，需要动态 import
 let codexInstance: any = null;
+// 记录当前 Codex 实例是基于哪个凭证构建的。
+// Worker 模式下每个 Worker 只有一个凭证；但 Web 单进程会切换凭证，
+// 凭证变了必须重建实例，否则会一直用首个凭证的 apiKey/baseUrl。
+let codexInstanceCredentialId: string | null = null;
 
 /**
  * 确保 feishu-tools MCP 服务器已注册到 Codex 全局配置。
@@ -318,29 +323,41 @@ function ensureMcpServerRegistered(): void {
 }
 
 async function getCodex(): Promise<any> {
+  const activeCredentialId = getActiveCredential()?.id ?? null;
+  if (codexInstance && codexInstanceCredentialId !== activeCredentialId) {
+    // 凭证已切换，丢弃旧实例以使用新的 apiKey/baseUrl
+    codexInstance = null;
+  }
+
   if (!codexInstance) {
-    // Codex CLI 优先使用 CODEX_API_KEY 进行认证
-    // 如果只设置了 OPENAI_API_KEY，复制到 CODEX_API_KEY 确保认证正常
-    if (!process.env.CODEX_API_KEY && process.env.OPENAI_API_KEY) {
-      process.env.CODEX_API_KEY = process.env.OPENAI_API_KEY;
-    }
+    const credential = getActiveCredential();
 
     logDetail('codex.init', {
-      hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
-      hasCodexKey: Boolean(process.env.CODEX_API_KEY),
-      baseUrl: process.env.OPENAI_BASE_URL || null,
+      credentialId: credential?.id || null,
+      mode: credential?.mode || null,
+      hasApiKey: Boolean(credential?.apiKey),
+      baseUrl: credential?.baseUrl || null,
     });
 
     // 注册 MCP 服务器到 Codex 全局配置
     ensureMcpServerRegistered();
 
-    const { Codex } = await import('@openai/codex-sdk');
-    codexInstance = new Codex({
+    // 凭证为 api 模式时显式传入 baseUrl/apiKey；
+    // subscription 模式不传，Codex SDK 回退到 ~/.codex 登录态。
+    const codexOptions: Record<string, unknown> = {
       config: {
         sandbox_mode: CODEX_SANDBOX_MODE,
         approval_policy: CODEX_APPROVAL_POLICY,
       },
-    });
+    };
+    if (credential?.mode === 'api') {
+      if (credential.apiKey) codexOptions.apiKey = credential.apiKey;
+      if (credential.baseUrl) codexOptions.baseUrl = credential.baseUrl;
+    }
+
+    const { Codex } = await import('@openai/codex-sdk');
+    codexInstance = new Codex(codexOptions);
+    codexInstanceCredentialId = credential?.id ?? null;
   }
   return codexInstance;
 }
@@ -368,23 +385,24 @@ export async function* streamCodexChat(
       inputImageCount,
     });
 
+    const credentialModel = getActiveCredential()?.model;
+    const threadOptions: Record<string, unknown> = {
+      workingDirectory,
+      sandboxMode: CODEX_SANDBOX_MODE,
+      approvalPolicy: CODEX_APPROVAL_POLICY,
+      skipGitRepoCheck: true,
+    };
+    if (credentialModel) {
+      threadOptions.model = credentialModel;
+    }
+
     let thread;
     if (sessionId) {
       console.log(`[Codex] 恢复线程: ${sessionId}`);
-      thread = codex.resumeThread(sessionId, {
-        workingDirectory,
-        sandboxMode: CODEX_SANDBOX_MODE,
-        approvalPolicy: CODEX_APPROVAL_POLICY,
-        skipGitRepoCheck: true,
-      });
+      thread = codex.resumeThread(sessionId, threadOptions);
     } else {
       console.log(`[Codex] 创建新线程`);
-      thread = codex.startThread({
-        workingDirectory,
-        sandboxMode: CODEX_SANDBOX_MODE,
-        approvalPolicy: CODEX_APPROVAL_POLICY,
-        skipGitRepoCheck: true,
-      });
+      thread = codex.startThread(threadOptions);
     }
 
     const { events } = await thread.runStreamed(turnInput, {
